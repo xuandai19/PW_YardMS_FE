@@ -1,6 +1,25 @@
 import { useEffect, useState } from 'react';
 import { Button, DatePicker, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Upload, message } from 'antd';
+import axios from 'axios';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+
+function apiError(error: unknown, fallback: string): string {
+  if (axios.isAxiosError<{ message?: string }>(error)) return error.response?.data?.message ?? fallback;
+  return error instanceof Error ? error.message : fallback;
+}
+
+type PartnerOption = { id: string; code: string; name: string; partnerType: string };
+type ContractOption = {
+  id: string;
+  contractNo: string;
+  contractType: string;
+  partnerAId: string;
+  partnerCId?: string;
+  startDate: string;
+  endDate: string;
+  status: string;
+};
 
 type Debt = {
   id: string;
@@ -21,6 +40,8 @@ type Invoice = {
   dueDate: string;
   totalAmount: number;
   status: string;
+  deliveryStatus?: string;
+  deliveryError?: string;
 };
 
 type ServiceOrder = {
@@ -40,9 +61,13 @@ type InterestEntry = {
 };
 
 export default function FinancePage() {
+  const { user } = useAuth();
+  const canManageFinance = !!user?.roles.some(role => ['ADMIN', 'MANAGER'].includes(role));
   const [debts, setDebts] = useState<Debt[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [orders, setOrders] = useState<ServiceOrder[]>([]);
+  const [issueableOrders, setIssueableOrders] = useState<ServiceOrder[]>([]);
+  const [partners, setPartners] = useState<PartnerOption[]>([]);
+  const [contracts, setContracts] = useState<ContractOption[]>([]);
   const [issueOpen, setIssueOpen] = useState(false);
   const [paymentInvoice, setPaymentInvoice] = useState<Invoice>();
   const [paymentProof, setPaymentProof] = useState<File>();
@@ -56,14 +81,16 @@ export default function FinancePage() {
   const [interestForm] = Form.useForm();
 
   const load = async () => {
-    const [debtResponse, invoiceResponse, orderResponse] = await Promise.all([
+    const [debtResponse, invoiceResponse, partnerResponse, contractResponse] = await Promise.all([
       api.get('/finance/debts'),
       api.get('/finance/invoices'),
-      api.get('/service-orders'),
+      api.get('/partners'),
+      api.get('/contracts'),
     ]);
     setDebts(debtResponse.data.data);
     setInvoices(invoiceResponse.data.data);
-    setOrders(orderResponse.data.data);
+    setPartners(partnerResponse.data.data);
+    setContracts(contractResponse.data.data);
   };
 
   useEffect(() => {
@@ -81,8 +108,35 @@ export default function FinancePage() {
       setIssueOpen(false);
       issueForm.resetFields();
       await load();
-    } catch {
-      message.error('Không thể phát hành hóa đơn');
+    } catch (error) {
+      message.error(apiError(error, 'Không thể phát hành hóa đơn'));
+    }
+  };
+
+  const loadIssueableOrders = async (partnerId?: string, contractId?: string) => {
+    if (!partnerId) {
+      setIssueableOrders([]);
+      return;
+    }
+    try {
+      const response = await api.get('/finance/issueable-orders', {
+        params: { partnerId, ...(contractId ? { contractId } : {}) },
+      });
+      setIssueableOrders(response.data.data);
+    } catch (error) {
+      setIssueableOrders([]);
+      message.error(apiError(error, 'Không thể tải đơn dịch vụ đủ điều kiện lập hóa đơn'));
+    }
+  };
+
+  const onIssueValuesChange = (changed: Record<string, unknown>, values: { partnerId?: string; contractId?: string }) => {
+    if ('partnerId' in changed) {
+      issueForm.setFieldValue('contractId', undefined);
+      issueForm.setFieldValue('serviceOrderIds', []);
+      void loadIssueableOrders(values.partnerId);
+    } else if ('contractId' in changed) {
+      issueForm.setFieldValue('serviceOrderIds', []);
+      void loadIssueableOrders(values.partnerId, values.contractId);
     }
   };
 
@@ -103,8 +157,8 @@ export default function FinancePage() {
       setPaymentProof(undefined);
       paymentForm.resetFields();
       await load();
-    } catch {
-      message.error('Không thể ghi nhận thanh toán');
+    } catch (error) {
+      message.error(apiError(error, 'Không thể ghi nhận thanh toán'));
     }
   };
 
@@ -117,8 +171,8 @@ export default function FinancePage() {
       link.download = `invoice-${id}.pdf`;
       link.click();
       URL.revokeObjectURL(url);
-    } catch {
-      message.error('Không thể tải PDF hóa đơn');
+    } catch (error) {
+      message.error(apiError(error, 'Không thể tải PDF hóa đơn'));
     }
   };
 
@@ -127,8 +181,8 @@ export default function FinancePage() {
       await api.post(`/finance/invoices/${id}/e-invoice`);
       message.success('Đã gửi hóa đơn đến nhà cung cấp hóa đơn điện tử');
       await load();
-    } catch {
-      message.error('Không thể gửi hóa đơn điện tử; kiểm tra cấu hình nhà cung cấp');
+    } catch (error) {
+      message.error(apiError(error, 'Không thể gửi hóa đơn điện tử; kiểm tra cấu hình nhà cung cấp'));
     }
   };
 
@@ -139,8 +193,8 @@ export default function FinancePage() {
       message.success('Đã lưu cấu hình lãi công nợ');
       setInterestOpen(false);
       interestForm.resetFields();
-    } catch {
-      message.error('Không thể lưu cấu hình lãi');
+    } catch (error) {
+      message.error(apiError(error, 'Không thể lưu cấu hình lãi'));
     }
   };
 
@@ -149,16 +203,24 @@ export default function FinancePage() {
       const response = await api.get(`/finance/debts/${debtId}/interest`);
       setInterestHistory(response.data.data);
       setInterestHistoryOpen(true);
-    } catch {
-      message.error('Không thể tải lịch sử tính lãi');
+    } catch (error) {
+      message.error(apiError(error, 'Không thể tải lịch sử tính lãi'));
     }
   };
 
-  const issueableOrders = orders.filter(order => order.status === 'COMPLETED');
-  const filteredDebts = debts.filter(debt => debt.partnerId.toLowerCase().includes(debtPartnerFilter.toLowerCase()));
-  const filteredInvoices = invoices.filter(invoice => invoice.partnerId.toLowerCase().includes(invoicePartnerFilter.toLowerCase()));
+  const partnerName = (partnerId: string) => {
+    const partner = partners.find(item => item.id === partnerId);
+    return partner ? `${partner.code} - ${partner.name}` : partnerId;
+  };
+  const eligibleContracts = (partnerId?: string) => contracts.filter(contract =>
+    contract.status === 'ACTIVE'
+    && contract.startDate <= new Date().toISOString().slice(0, 10)
+    && contract.endDate >= new Date().toISOString().slice(0, 10)
+    && (contract.partnerAId === partnerId || contract.partnerCId === partnerId));
+  const filteredDebts = debts.filter(debt => partnerName(debt.partnerId).toLowerCase().includes(debtPartnerFilter.toLowerCase()));
+  const filteredInvoices = invoices.filter(invoice => partnerName(invoice.partnerId).toLowerCase().includes(invoicePartnerFilter.toLowerCase()));
   const debtColumns = [
-    { title: 'Đối tác', dataIndex: 'partnerId', key: 'partnerId' },
+    { title: 'Đối tác', dataIndex: 'partnerId', key: 'partnerId', render: (id: string) => partnerName(id) },
     { title: 'Hóa đơn', dataIndex: 'invoiceId', key: 'invoiceId' },
     { title: 'Gốc', dataIndex: 'principalAmount', key: 'principalAmount', render: (value: number) => value.toLocaleString('vi-VN') },
     { title: 'Đã trả', dataIndex: 'paidAmount', key: 'paidAmount', render: (value: number) => value.toLocaleString('vi-VN') },
@@ -169,18 +231,23 @@ export default function FinancePage() {
   ];
   const invoiceColumns = [
     { title: 'Số hóa đơn', dataIndex: 'invoiceNo', key: 'invoiceNo' },
-    { title: 'Đối tác', dataIndex: 'partnerId', key: 'partnerId' },
+    { title: 'Đối tác', dataIndex: 'partnerId', key: 'partnerId', render: (id: string) => partnerName(id) },
     { title: 'Ngày phát hành', dataIndex: 'issueDate', key: 'issueDate' },
     { title: 'Hạn thanh toán', dataIndex: 'dueDate', key: 'dueDate' },
     { title: 'Tổng', dataIndex: 'totalAmount', key: 'totalAmount', render: (value: number) => value.toLocaleString('vi-VN') },
     { title: 'Trạng thái', dataIndex: 'status', key: 'status', render: (status: string) => <Tag color={status === 'PAID' ? 'green' : status === 'OVERDUE' ? 'red' : 'blue'}>{status}</Tag> },
+    { title: 'Gửi email', dataIndex: 'deliveryStatus', key: 'deliveryStatus', render: (status?: string, invoice?: Invoice) => (
+      <Tag title={invoice?.deliveryError} color={status === 'SENT' ? 'green' : status === 'FAILED' ? 'red' : 'default'}>
+        {status === 'SENT' ? 'Đã gửi' : status === 'FAILED' ? 'Gửi lỗi' : status === 'PENDING' ? 'Đang gửi' : 'Chưa gửi'}
+      </Tag>
+    ) },
     {
       title: 'Thao tác',
       key: 'actions',
       render: (_: unknown, invoice: Invoice) => (
         <Space>
           <Button onClick={() => void downloadInvoice(invoice.id)}>PDF</Button>
-          <Button onClick={() => void submitEInvoice(invoice.id)}>Hóa đơn điện tử</Button>
+          {canManageFinance && <Button onClick={() => void submitEInvoice(invoice.id)}>Hóa đơn điện tử</Button>}
           {invoice.status !== 'CANCELLED' && (
             <Button type="primary" onClick={() => setPaymentInvoice(invoice)}>Ghi thanh toán</Button>
           )}
@@ -194,38 +261,43 @@ export default function FinancePage() {
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-semibold">Công nợ và hóa đơn</h2>
         <Space>
-          <Button onClick={() => setInterestOpen(true)}>Cấu hình lãi</Button>
-          <Button type="primary" onClick={() => setIssueOpen(true)}>Phát hành hóa đơn</Button>
+          {canManageFinance && <Button onClick={() => setInterestOpen(true)}>Cấu hình lãi</Button>}
+          {canManageFinance && <Button type="primary" onClick={() => setIssueOpen(true)}>Phát hành hóa đơn</Button>}
         </Space>
       </div>
       <Tabs items={[
         { key: 'debts', label: 'Công nợ', children: <>
-          <Input.Search className="mb-3 max-w-md" allowClear placeholder="Lọc theo UUID đối tác"
+          <Input.Search className="mb-3 max-w-md" allowClear placeholder="Lọc theo mã hoặc tên đối tác"
             onChange={event => setDebtPartnerFilter(event.target.value)} />
           <Table rowKey="id" dataSource={filteredDebts} columns={debtColumns} />
         </> },
         { key: 'invoices', label: 'Hóa đơn', children: <>
-          <Input.Search className="mb-3 max-w-md" allowClear placeholder="Lọc theo UUID đối tác"
+          <Input.Search className="mb-3 max-w-md" allowClear placeholder="Lọc theo mã hoặc tên đối tác"
             onChange={event => setInvoicePartnerFilter(event.target.value)} />
           <Table rowKey="id" dataSource={filteredInvoices} columns={invoiceColumns} />
         </> },
       ]} />
       <Modal open={issueOpen} title="Phát hành hóa đơn dịch vụ" footer={null} onCancel={() => setIssueOpen(false)}>
-        <Form form={issueForm} layout="vertical" onFinish={issueInvoice}>
-          <Form.Item name="partnerId" label="UUID đối tác nhận hóa đơn (A/C)" rules={[{ required: true }]}>
-            <Input placeholder="UUID đối tác" />
+        <Form form={issueForm} layout="vertical" onFinish={issueInvoice} onValuesChange={onIssueValuesChange}>
+          <Form.Item name="partnerId" label="Đối tác nhận hóa đơn" rules={[{ required: true, message: 'Chọn đối tác nhận hóa đơn' }]}>
+            <Select showSearch optionFilterProp="label" options={partners.map((partner) => ({ value: partner.id, label: `${partner.code} - ${partner.name} (${partner.partnerType})` }))} placeholder="Chọn đối tác" />
           </Form.Item>
-          <Form.Item name="contractId" label="Hợp đồng A–C (nếu xuất cho C)">
-            <Input placeholder="UUID hợp đồng, nếu cần" />
+          <Form.Item name="contractId" label="Hợp đồng (bắt buộc nếu xuất cho đối tác C)">
+            <Select allowClear showSearch optionFilterProp="label"
+              options={eligibleContracts(issueForm.getFieldValue('partnerId')).map(contract => ({
+                value: contract.id,
+                label: `${contract.contractNo} (${contract.contractType})`,
+              }))}
+              placeholder="Chọn hợp đồng đang hiệu lực nếu cần" />
           </Form.Item>
-          <Form.Item name="serviceOrderIds" label="Đơn dịch vụ đã hoàn thành" rules={[{ required: true }]}>
+          <Form.Item name="serviceOrderIds" label="Đơn dịch vụ đã hoàn thành, chưa xuất hóa đơn" rules={[{ required: true, message: 'Chọn ít nhất một đơn dịch vụ' }]}>
             <Select mode="multiple" options={issueableOrders.map(order => ({
               value: order.id,
               label: `${order.id} · xe ${order.vehicleId} · ${order.totalAmount.toLocaleString('vi-VN')}`,
             }))} />
           </Form.Item>
-          <Form.Item name="dueDate" label="Hạn thanh toán" rules={[{ required: true }]}>
-            <DatePicker className="w-full" />
+          <Form.Item name="dueDate" label="Hạn thanh toán" rules={[{ required: true, message: 'Chọn hạn thanh toán' }]}>
+            <DatePicker className="w-full" disabledDate={date => !date.isAfter(new Date(), 'day')} />
           </Form.Item>
           <Form.Item name="taxRatePercent" label="Thuế (%)" initialValue={0}>
             <InputNumber min={0} max={100} className="w-full" />
@@ -235,7 +307,7 @@ export default function FinancePage() {
       </Modal>
       <Modal open={interestOpen} title="Cấu hình lãi quá hạn" footer={null} onCancel={() => setInterestOpen(false)}>
         <Form form={interestForm} layout="vertical" initialValues={{ graceDays: 0, active: true }} onFinish={configureInterest}>
-          <Form.Item name="partnerId" label="UUID đối tác" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="partnerId" label="Partner" rules={[{ required: true, message: "Select a partner" }]}><Select showSearch optionFilterProp="label" options={partners.map((partner) => ({ value: partner.id, label: `${partner.code} - ${partner.name}` }))} placeholder="Select partner" /></Form.Item>
           <Form.Item name="ratePerDayPercent" label="Lãi (%/ngày)" rules={[{ required: true }]}><InputNumber min={0} precision={5} className="w-full" /></Form.Item>
           <Form.Item name="graceDays" label="Số ngày ân hạn" rules={[{ required: true }]}><InputNumber min={0} precision={0} className="w-full" /></Form.Item>
           <Form.Item name="active" label="Đang áp dụng" valuePropName="checked" initialValue><Select options={[{ value: true, label: 'Có' }, { value: false, label: 'Không' }]} /></Form.Item>

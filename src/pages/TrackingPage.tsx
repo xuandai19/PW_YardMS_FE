@@ -1,5 +1,5 @@
 import { Client } from '@stomp/stompjs';
-import { Alert, Button, Card, Col, Form, Input, InputNumber, message, Row, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Form, Input, InputNumber, message, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Circle, CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap } from 'react-leaflet';
 import axios from 'axios';
@@ -17,6 +17,10 @@ type RoutePoint = {
 };
 type Geofence = { id: string; name: string; latitude: number; longitude: number; radiusM: number };
 type RouteAlert = { id: string; tripId: string; message: string; createdAt: string };
+type TripOption = {
+  id: string; tripCode?: string; tripName?: string; origin: string; destination: string;
+  originLatitude?: number; originLongitude?: number;
+};
 const { Title, Text } = Typography;
 
 function errorText(error: unknown): string {
@@ -34,6 +38,7 @@ function FollowVehicle({ center }: { center: [number, number] }) {
 
 export default function TrackingPage() {
   const [tripId, setTripId] = useState('');
+  const [trips, setTrips] = useState<TripOption[]>([]);
   const [points, setPoints] = useState<RoutePoint[]>([]);
   const [geofences, setGeofences] = useState<Geofence[]>([]);
   const [alerts, setAlerts] = useState<RouteAlert[]>([]);
@@ -41,6 +46,11 @@ export default function TrackingPage() {
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fenceForm] = Form.useForm();
+
+  useEffect(() => {
+    void api.get('/trips').then((response) => setTrips(response.data.data))
+      .catch((error: unknown) => message.error(errorText(error)));
+  }, []);
 
   const loadTrip = useCallback(async (id: string) => {
     if (!id.trim()) return;
@@ -110,9 +120,12 @@ export default function TrackingPage() {
   const route = useMemo(() => points.slice(0, playing ? playIndex + 1 : undefined)
     .map((point) => [point.latitude, point.longitude] as [number, number]), [points, playIndex, playing]);
   const activePoint = points[Math.max(0, playing ? playIndex : points.length - 1)];
+  const selectedTrip = trips.find((trip) => trip.id === tripId);
   const mapCenter = useMemo<[number, number]>(() => activePoint
     ? [activePoint.latitude, activePoint.longitude]
-    : [10.7769, 106.7009], [activePoint]);
+    : selectedTrip?.originLatitude != null && selectedTrip.originLongitude != null
+      ? [selectedTrip.originLatitude, selectedTrip.originLongitude]
+      : [10.7769, 106.7009], [activePoint, selectedTrip]);
 
   const addGeofence = async (values: { name: string; latitude: number; longitude: number; radiusM: number }) => {
     if (!tripId) {
@@ -134,11 +147,25 @@ export default function TrackingPage() {
       <Title level={3}>Theo dõi hành trình GPS</Title>
       <Card>
         <Space.Compact className="w-full">
-          <Input value={tripId} onChange={(event) => setTripId(event.target.value)}
-            onPressEnter={() => void loadTrip(tripId)} placeholder="Mã chuyến đi (UUID)" />
-          <Button type="primary" loading={loading} onClick={() => void loadTrip(tripId)}>Tải hành trình</Button>
+          <Select className="min-w-0 flex-1" value={tripId || undefined} onChange={(id) => {
+            setTripId(id);
+            setPoints([]);
+            setGeofences([]);
+            setPlayIndex(0);
+            setPlaying(false);
+          }} showSearch optionFilterProp="label"
+            options={trips.map((trip) => ({ value: trip.id, label: `${trip.tripName ?? `${trip.origin} → ${trip.destination}`} · ${trip.tripCode ?? trip.id}` }))}
+            notFoundContent="Chưa có chuyến đi. Hãy đăng ký xe trước."
+            placeholder="Chọn chuyến đi" />
+          <Button type="primary" disabled={!tripId} loading={loading} onClick={() => void loadTrip(tripId)}>Tải hành trình</Button>
         </Space.Compact>
       </Card>
+      {trips.length === 0 ? <Alert type="warning" showIcon message="Chưa có chuyến đi để theo dõi"
+        description="Hãy đăng ký xe ở mục Vận hành bãi → Thông báo xe trước. Hệ thống sẽ tạo chuyến sau khi xác nhận đăng ký." /> : selectedTrip && <Alert type="info" showIcon
+        message={`Điểm xuất phát đã đăng ký: ${selectedTrip.origin}`}
+        description={selectedTrip.originLatitude != null && selectedTrip.originLongitude != null
+          ? `Tọa độ điểm đầu: ${selectedTrip.originLatitude.toFixed(6)}, ${selectedTrip.originLongitude.toFixed(6)}. Đường đi tiếp tục cập nhật theo GPS xe.`
+          : 'Chưa có tọa độ GPS điểm xuất phát; đường đi sẽ hiển thị khi nhận được GPS từ xe.'} />}
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={16}>
           <Card title="Bản đồ realtime và playback">
@@ -147,6 +174,11 @@ export default function TrackingPage() {
               <TileLayer attribution="&copy; OpenStreetMap contributors"
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
               {route.length > 1 && <Polyline positions={route} pathOptions={{ color: '#1677ff', weight: 4 }} />}
+              {selectedTrip?.originLatitude != null && selectedTrip.originLongitude != null && <CircleMarker
+                center={[selectedTrip.originLatitude, selectedTrip.originLongitude]} radius={8}
+                pathOptions={{ color: '#389e0d', fillColor: '#95de64', fillOpacity: 0.9 }}>
+                <Tooltip permanent>Điểm xuất phát</Tooltip>
+              </CircleMarker>}
               {activePoint && <CircleMarker center={mapCenter} radius={9}
                 pathOptions={{ color: activePoint.offRoute ? '#cf1322' : '#1677ff' }}>
                 <Tooltip permanent>{activePoint.speedKmh ?? 0} km/h</Tooltip>

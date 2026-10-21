@@ -7,6 +7,18 @@ export interface PreNotification {
   driverName: string;
   driverPhone?: string;
   status: string;
+  tripId?: string;
+}
+
+export interface TripSummary {
+  id: string;
+  tripCode: string;
+  tripName: string;
+  origin: string;
+  originLatitude?: number;
+  originLongitude?: number;
+  destination: string;
+  status: string;
 }
 
 export interface Yard {
@@ -62,6 +74,8 @@ export interface ServiceOption {
   code: string;
   name: string;
   hourlyRate: number;
+  serviceType: string;
+  expectedDurationMinutes: number;
   active: boolean;
 }
 
@@ -75,6 +89,8 @@ export interface ServiceOrder {
   quantity: number;
   unitPrice: number;
   totalAmount: number;
+  yardId?: string;
+  expectedEndAt?: string;
 }
 
 export function formatYardDuration(durationSeconds: number): string {

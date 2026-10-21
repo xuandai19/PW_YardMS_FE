@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Input, message, Select, Space, Table, Tag, Typography, Upload } from 'antd';
+import { Alert, Button, Card, message, Select, Space, Table, Tag, Typography, Upload } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { UploadOutlined } from '@ant-design/icons';
 import { Client } from '@stomp/stompjs';
@@ -17,6 +17,7 @@ type Confirmation = {
   signatureUrl?: string;
 };
 type ConfirmationAlert = { id: string; message: string; createdAt: string; acknowledged: boolean };
+type TripOption = { id: string; tripCode?: string; tripName?: string; origin: string; destination: string };
 const { Title, Text } = Typography;
 
 function errorText(error: unknown): string {
@@ -29,6 +30,7 @@ export default function ConfirmationsPage() {
   const [type, setType] = useState<'DEPARTURE' | 'ARRIVAL'>('DEPARTURE');
   const [confirmations, setConfirmations] = useState<Confirmation[]>([]);
   const [alerts, setAlerts] = useState<ConfirmationAlert[]>([]);
+  const [trips, setTrips] = useState<TripOption[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +46,11 @@ export default function ConfirmationsPage() {
   }, [tripId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    void api.get('/trips').then((response) => setTrips(response.data.data))
+      .catch((error: unknown) => message.error(errorText(error)));
+  }, []);
 
   useEffect(() => {
     const base = api.defaults.baseURL ?? window.location.origin;
@@ -128,8 +135,9 @@ export default function ConfirmationsPage() {
       <Title level={3}>Xác nhận tài xế và SLA</Title>
       <Card title="Tạo yêu cầu xác nhận">
         <Space.Compact className="w-full">
-          <Input value={tripId} onChange={(event) => setTripId(event.target.value)}
-            onPressEnter={() => void load()} placeholder="Mã chuyến đi (UUID)" />
+          <Select className="min-w-0 flex-1" value={tripId || undefined} onChange={setTripId} showSearch optionFilterProp="label"
+            options={trips.map((trip) => ({ value: trip.id, label: `${trip.tripName ?? `${trip.origin} → ${trip.destination}`} · ${trip.tripCode ?? trip.id}` }))}
+            placeholder="Chọn chuyến đi" />
           <Select value={type} onChange={setType} options={[
             { value: 'DEPARTURE', label: 'Xuất phát' },
             { value: 'ARRIVAL', label: 'Đến nơi' },

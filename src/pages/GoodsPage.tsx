@@ -1,5 +1,5 @@
 import { CameraOutlined, PlusOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Col, Form, Input, InputNumber, message, Row, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Form, Input, InputNumber, message, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import axios from 'axios';
@@ -27,6 +27,7 @@ type Discrepancy = {
   resolved: boolean;
 };
 type GoodsQr = { goods: Goods; imageBase64: string };
+type TripOption = { id: string; tripCode?: string; tripName?: string; origin: string; destination: string; status: string };
 const { Title, Text } = Typography;
 
 function errorText(error: unknown): string {
@@ -36,6 +37,7 @@ function errorText(error: unknown): string {
 
 export default function GoodsPage() {
   const [goods, setGoods] = useState<Goods[]>([]);
+  const [trips, setTrips] = useState<TripOption[]>([]);
   const [qrImages, setQrImages] = useState<Record<string, string>>({});
   const [discrepancies, setDiscrepancies] = useState<Discrepancy[]>([]);
   const [tripId, setTripId] = useState('');
@@ -59,6 +61,11 @@ export default function GoodsPage() {
   }, [tripId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    void api.get('/trips').then((response) => setTrips(response.data.data))
+      .catch((error: unknown) => message.error(errorText(error)));
+  }, []);
 
   useEffect(() => {
     if (!scanActive) return undefined;
@@ -140,7 +147,7 @@ export default function GoodsPage() {
       <Card title="Tạo mã QR hàng hóa">
         <Form form={form} layout="vertical" onFinish={createBatch}>
           <Row gutter={16}>
-            <Col xs={24} md={8}><Form.Item name="tripId" label="Mã chuyến đi" rules={[{ required: true }]}><Input /></Form.Item></Col>
+            <Col xs={24} md={8}><Form.Item name="tripId" label="Chuyến đi" rules={[{ required: true, message: 'Chọn chuyến đi trong danh sách' }]}><Select showSearch optionFilterProp="label" options={trips.map((trip) => ({ value: trip.id, label: `${trip.tripName ?? `${trip.origin} → ${trip.destination}`} · ${trip.tripCode ?? trip.id}` }))} placeholder="Chọn chuyến đi" /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="itemCode" label="Mã hàng" rules={[{ required: true }]}><Input /></Form.Item></Col>
             <Col xs={24} md={8}><Form.Item name="description" label="Mô tả"><Input /></Form.Item></Col>
             <Col xs={12} md={8}><Form.Item name="quantity" label="Số lượng dự kiến" rules={[{ required: true }]}><InputNumber min={0.0001} className="w-full" /></Form.Item></Col>
@@ -171,7 +178,7 @@ export default function GoodsPage() {
       </Card>
       <Card title="Danh sách hàng hóa và QR">
         <Space.Compact className="mb-4 w-full">
-          <Input value={tripId} onChange={(event) => setTripId(event.target.value)} placeholder="Mã chuyến đi để tải hàng hóa" />
+          <Select className="min-w-0 flex-1" value={tripId || undefined} onChange={setTripId} showSearch optionFilterProp="label" options={trips.map((trip) => ({ value: trip.id, label: `${trip.tripName ?? `${trip.origin} → ${trip.destination}`} · ${trip.tripCode ?? trip.id}` }))} placeholder="Chọn chuyến để tải hàng hóa" />
           <Button type="primary" onClick={() => void load()}>Tải</Button>
         </Space.Compact>
         <Table rowKey="id" columns={goodsColumns} dataSource={goods} pagination={{ pageSize: 8 }} expandable={{

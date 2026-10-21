@@ -12,6 +12,7 @@ import {
 } from '@ant-design/icons';
 import {
   Alert,
+  AutoComplete,
   Badge,
   Button,
   Card,
@@ -53,9 +54,18 @@ import {
   type YardAlert,
   type YardHistoryEntry,
   type YardInventory,
+  type TripSummary,
 } from './operations';
 
 const { Title, Text } = Typography;
+
+const ORIGIN_ADDRESS_SUGGESTIONS = [
+  'Cảng Cát Lái, TP. Thủ Đức, TP. Hồ Chí Minh',
+  'ICD Sóng Thần, Dĩ An, Bình Dương',
+  'Cảng Cái Mép, Phú Mỹ, Bà Rịa - Vũng Tàu',
+  'Cảng Hải Phòng, Hải An, Hải Phòng',
+  'Bãi xe Long Bình, TP. Thủ Đức, TP. Hồ Chí Minh',
+].map((value) => ({ value }));
 
 function apiError(error: unknown, fallback: string): string {
   if (axios.isAxiosError<{ message?: string }>(error)) {
@@ -64,31 +74,30 @@ function apiError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-function localDateTimeMin(): string {
-  const date = new Date(Date.now() + 4 * 60 * 60 * 1000);
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
 function VehicleRegistrationTab() {
   const [form] = Form.useForm();
   const [partners, setPartners] = useState<{ id: string; name: string; code: string }[]>([]);
   const [services, setServices] = useState<ServiceOption[]>([]);
   const [notifications, setNotifications] = useState<PreNotification[]>([]);
+  const [trips, setTrips] = useState<TripSummary[]>([]);
   const [saving, setSaving] = useState(false);
   const [qr, setQr] = useState<{ imageBase64: string; expiresAt: string; token: string }>();
+  const [originCoordinates, setOriginCoordinates] = useState('');
+  const [locatingOrigin, setLocatingOrigin] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [partnerResponse, serviceResponse, queueResponse] = await Promise.all([
+      const [partnerResponse, serviceResponse, queueResponse, tripResponse] = await Promise.all([
         api.get('/partners'),
         api.get('/services', { params: { activeOnly: true } }),
         api.get('/vehicles/pre-notifications/waiting'),
+        api.get('/trips'),
       ]);
       setPartners(partnerResponse.data.data.filter((partner: { partnerType: string }) =>
         partner.partnerType === 'A'));
       setServices(serviceResponse.data.data);
       setNotifications(queueResponse.data.data);
+      setTrips(tripResponse.data.data);
     } catch (error) {
       message.error(apiError(error, 'Không thể tải dữ liệu đăng ký xe'));
     }
@@ -106,6 +115,9 @@ function VehicleRegistrationTab() {
     driverPhone?: string;
     carrierCompany?: string;
     vehicleType?: string;
+    startAddress: string;
+    originLatitude?: number;
+    originLongitude?: number;
     serviceIds?: string[];
   }) => {
     setSaving(true);
@@ -116,6 +128,7 @@ function VehicleRegistrationTab() {
         serviceIds: values.serviceIds ?? [],
       });
       form.resetFields();
+      setOriginCoordinates('');
       message.success('Đã đăng ký xe và dịch vụ trước');
       await load();
     } catch (error) {
@@ -134,8 +147,48 @@ function VehicleRegistrationTab() {
     }
   };
 
+  const locateOrigin = async () => {
+    if (!navigator.geolocation) {
+      message.error('Trình duyệt không hỗ trợ xác định vị trí. Bạn vẫn có thể nhập địa chỉ bằng tay.');
+      return;
+    }
+    setLocatingOrigin(true);
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15_000,
+          maximumAge: 0,
+        });
+      });
+      const latitude = Number(position.coords.latitude.toFixed(7));
+      const longitude = Number(position.coords.longitude.toFixed(7));
+      form.setFieldsValue({ originLatitude: latitude, originLongitude: longitude });
+      setOriginCoordinates(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+      message.success('Đã xác định tọa độ xuất phát. Hãy kiểm tra hoặc nhập tên địa chỉ để dễ nhận biết.');
+    } catch (error) {
+      const geoError = error as GeolocationPositionError;
+      message.error(geoError.code === 1
+        ? 'Bạn chưa cấp quyền vị trí cho trình duyệt. Có thể nhập địa chỉ xuất phát bằng tay.'
+        : 'Không lấy được vị trí hiện tại. Kiểm tra GPS hoặc nhập địa chỉ bằng tay.');
+    } finally {
+      setLocatingOrigin(false);
+    }
+  };
+
   const columns: ColumnsType<PreNotification> = [
     { title: 'Biển số', dataIndex: 'plateNumber', key: 'plateNumber' },
+    {
+      title: 'Điểm xuất phát', key: 'origin',
+      render: (_, row) => trips.find((item) => item.id === row.tripId)?.origin ?? '—',
+    },
+    {
+      title: 'Chuyến đi', key: 'trip',
+      render: (_, row) => {
+        const trip = trips.find((item) => item.id === row.tripId);
+        return trip ? <Space direction="vertical" size={0}><Text strong>{trip.tripName}</Text><Text type="secondary">{trip.tripCode}</Text></Space> : 'Đang tải mã chuyến';
+      },
+    },
     { title: 'Tài xế', dataIndex: 'driverName', key: 'driverName' },
     {
       title: 'Dự kiến đến',
@@ -154,7 +207,13 @@ function VehicleRegistrationTab() {
   return (
     <Space direction="vertical" size="large" className="w-full">
       <Card title="Thông báo xe trước">
-        <Form form={form} layout="vertical" onFinish={register}>
+        <Alert className="mb-4" type="info" showIcon
+          message="Sau khi kiểm tra và xác nhận, hệ thống tạo chuyến với mã theo ngày đến và biển số xe." />
+        <Form form={form} layout="vertical" onFinish={register} onFinishFailed={({ errorFields }) => {
+          const firstError = errorFields[0];
+          message.error(firstError?.errors[0] ?? 'Vui lòng kiểm tra lại thông tin đăng ký xe.');
+          if (firstError) form.scrollToField(firstError.name);
+        }}>
           <Row gutter={16}>
             <Col xs={24} md={12}>
               <Form.Item name="partnerAId" label="Đối tác A" rules={[{ required: true, message: 'Chọn đối tác A' }]}>
@@ -170,14 +229,41 @@ function VehicleRegistrationTab() {
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item name="plateNumber" label="Biển số xe" rules={[{ required: true, message: 'Nhập biển số' }]}>
+              <Form.Item name="plateNumber" label="Biển số xe" rules={[
+                { required: true, whitespace: true, message: 'Nhập biển số' },
+                { max: 30, message: 'Biển số tối đa 30 ký tự' },
+                { pattern: /^[A-Za-z0-9.\-\s]+$/, message: 'Biển số chỉ gồm chữ cái, chữ số, dấu chấm hoặc dấu gạch ngang' },
+              ]}>
                 <Input placeholder="Ví dụ: 51C12345" />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item name="plannedArrival" label="Thời gian dự kiến đến" rules={[{ required: true, message: 'Chọn thời gian đến' }]}>
-                <Input type="datetime-local" min={localDateTimeMin()} />
+              <Form.Item name="plannedArrival" label="Thời gian dự kiến đến" rules={[
+                { required: true, message: 'Chọn thời gian đến' },
+                { validator: (_, value: string | undefined) => !value || new Date(value).getTime() >= Date.now() + 4 * 60 * 60 * 1000
+                  ? Promise.resolve() : Promise.reject(new Error('Thời gian đến phải cách hiện tại ít nhất 4 giờ. Hãy chọn giờ muộn hơn.')) },
+              ]}>
+                <Input type="datetime-local" />
               </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item name="startAddress" label="Địa chỉ xe bắt đầu đi" rules={[
+                { required: true, whitespace: true, message: 'Nhập địa chỉ xuất phát để theo dõi hành trình' },
+                { max: 255, message: 'Địa chỉ tối đa 255 ký tự' },
+              ]}>
+                <AutoComplete className="w-full" options={ORIGIN_ADDRESS_SUGGESTIONS}
+                  filterOption={(input, option) => (option?.value ?? '').toLowerCase().includes(input.toLowerCase())}
+                  >
+                  <Input placeholder="Chọn địa chỉ gợi ý hoặc nhập địa chỉ khác"
+                    addonAfter={<Button type="link" size="small" loading={locatingOrigin}
+                      icon={<EnvironmentOutlined />} onClick={() => void locateOrigin()}>Lấy vị trí hiện tại</Button>} />
+                </AutoComplete>
+              </Form.Item>
+              <Text type="secondary">{originCoordinates
+                ? `Tọa độ đã xác định: ${originCoordinates}`
+                : 'Bạn có thể nhập địa chỉ hoặc lấy tọa độ GPS hiện tại.'}</Text>
+              <Form.Item name="originLatitude" hidden><InputNumber /></Form.Item>
+              <Form.Item name="originLongitude" hidden><InputNumber /></Form.Item>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item name="driverName" label="Tên tài xế" rules={[{ required: true, message: 'Nhập tên tài xế' }]}>
@@ -185,7 +271,9 @@ function VehicleRegistrationTab() {
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item name="driverPhone" label="Số điện thoại tài xế"><Input /></Form.Item>
+              <Form.Item name="driverPhone" label="Số điện thoại tài xế" rules={[
+                { pattern: /^[+0-9 ().-]{7,30}$/, message: 'Số điện thoại gồm 7–30 ký tự số hoặc dấu +, khoảng trắng, ngoặc, chấm, gạch ngang' },
+              ]}><Input /></Form.Item>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item name="carrierCompany" label="Đơn vị vận chuyển"><Input /></Form.Item>
@@ -226,7 +314,7 @@ function VehicleRegistrationTab() {
   );
 }
 
-function GateTab({ yards }: { yards: Yard[] }) {
+function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
   const [token, setToken] = useState('');
   const [vehicle, setVehicle] = useState<{
     preNotificationId: string;
@@ -239,6 +327,10 @@ function GateTab({ yards }: { yards: Yard[] }) {
   const [yardId, setYardId] = useState<string>();
   const [checking, setChecking] = useState(false);
   const [history, setHistory] = useState<YardHistoryEntry[]>([]);
+  const [waiting, setWaiting] = useState<PreNotification[]>([]);
+  const [manualNotificationId, setManualNotificationId] = useState<string>();
+  const [manualYardId, setManualYardId] = useState<string>();
+  const [manualLoading, setManualLoading] = useState(false);
   const scanBusy = useRef(false);
   const lastScannedToken = useRef('');
 
@@ -251,9 +343,22 @@ function GateTab({ yards }: { yards: Yard[] }) {
     }
   }, []);
 
+  const loadWaiting = useCallback(async () => {
+    try {
+      const response = await api.get('/vehicles/pre-notifications/waiting');
+      setWaiting(response.data.data);
+    } catch (error) {
+      message.error(apiError(error, 'Không thể tải danh sách xe chờ vào bãi'));
+    }
+  }, []);
+
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
+
+  useEffect(() => {
+    if (isAdmin) void loadWaiting();
+  }, [isAdmin, loadWaiting]);
 
   const scan = useCallback(async (value: string) => {
     if (scanBusy.current || value === lastScannedToken.current) return;
@@ -283,10 +388,30 @@ function GateTab({ yards }: { yards: Yard[] }) {
       setToken('');
       setYardId(undefined);
       await loadHistory();
+      await loadWaiting();
     } catch (error) {
       message.error(apiError(error, 'Không thể check-in xe'));
     } finally {
       setChecking(false);
+    }
+  };
+
+  const manualCheckIn = async () => {
+    if (!manualNotificationId || !manualYardId) return;
+    setManualLoading(true);
+    try {
+      await api.post('/yard-logs/manual-check-in', {
+        preNotificationId: manualNotificationId,
+        yardId: manualYardId,
+      });
+      message.success('Đã xác nhận xe vào bãi thủ công');
+      setManualNotificationId(undefined);
+      setManualYardId(undefined);
+      await Promise.all([loadHistory(), loadWaiting()]);
+    } catch (error) {
+      message.error(apiError(error, 'Không thể check-in xe thủ công'));
+    } finally {
+      setManualLoading(false);
     }
   };
 
@@ -345,6 +470,32 @@ function GateTab({ yards }: { yards: Yard[] }) {
 
   return (
     <Space direction="vertical" size="large" className="w-full">
+      {isAdmin && <Card title="Check-in thủ công (Admin)">
+        <Alert className="mb-4" type="info" showIcon
+          message="Dùng khi không quét được QR. Xe vẫn phải có thông báo đăng ký và bãi còn sức chứa." />
+        <Row gutter={16} align="bottom">
+          <Col xs={24} md={10}>
+            <Text strong>Xe chờ vào bãi</Text>
+            <Select className="mt-2 w-full" value={manualNotificationId} onChange={setManualNotificationId}
+              placeholder="Chọn xe đã đăng ký"
+              options={waiting.map((item) => ({ value: item.id, label: `${item.plateNumber} — ${item.driverName}` }))} />
+          </Col>
+          <Col xs={24} md={9}>
+            <Text strong>Bãi tiếp nhận</Text>
+            <Select className="mt-2 w-full" value={manualYardId} onChange={setManualYardId}
+              placeholder="Chọn bãi còn hoạt động"
+              options={yards.filter((yard) => yard.status === 'ACTIVE').map((yard) => ({
+                value: yard.id, label: `${yard.code} — ${yard.name}`,
+              }))} />
+          </Col>
+          <Col xs={24} md={5}>
+            <Button type="primary" className="mt-2 w-full" loading={manualLoading}
+              disabled={!manualNotificationId || !manualYardId} onClick={() => void manualCheckIn()}>
+              Xác nhận xe vào
+            </Button>
+          </Col>
+        </Row>
+      </Card>}
       <Card title="Quét QR tại cổng">
         <Row gutter={24}>
           <Col xs={24} lg={12}>
@@ -409,6 +560,9 @@ function ServiceDispatchTab() {
   const [vehicleId, setVehicleId] = useState<string>();
   const [selectedServices, setSelectedServices] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [workerAvailability, setWorkerAvailability] = useState<Record<string, {
+    availableCount: number; workerCount: number; workers: { id: string; name: string; available: boolean }[];
+  }>>({});
 
   const loadOptions = useCallback(async () => {
     try {
@@ -436,6 +590,29 @@ function ServiceDispatchTab() {
     }
   }, []);
 
+  const existingServiceIds = useMemo(() => new Set(orders.map((order) => order.serviceId)), [orders]);
+  const servicesToCheck = useMemo(() => [...new Set([
+    ...selectedServices,
+    ...orders.filter((order) => order.status !== 'COMPLETED').map((order) => order.serviceId),
+  ])], [orders, selectedServices]);
+
+  useEffect(() => {
+    setWorkerAvailability({});
+    if (!vehicleId || !servicesToCheck.length) return;
+    let cancelled = false;
+    void Promise.all(servicesToCheck.map(async (serviceId) => {
+      try {
+        const response = await api.get('/service-orders/availability', { params: { vehicleId, serviceId } });
+        return [serviceId, response.data.data] as const;
+      } catch {
+        return [serviceId, null] as const;
+      }
+    })).then((results) => {
+      if (!cancelled) setWorkerAvailability(Object.fromEntries(results.filter(([, value]) => value)));
+    });
+    return () => { cancelled = true; };
+  }, [vehicleId, servicesToCheck]);
+
   useEffect(() => {
     void loadOptions();
   }, [loadOptions]);
@@ -455,7 +632,7 @@ function ServiceDispatchTab() {
       });
       setSelectedServices([]);
       message.success('Đã gán dịch vụ cho xe');
-      await loadOrders(vehicleId);
+      await Promise.all([loadOrders(vehicleId), loadOptions()]);
     } catch (error) {
       message.error(apiError(error, 'Không thể gán dịch vụ'));
     } finally {
@@ -466,17 +643,31 @@ function ServiceDispatchTab() {
   const transition = async (order: ServiceOrder, action: 'start' | 'end') => {
     try {
       await api.post(`/service-orders/${order.id}/${action}`);
-      message.success(action === 'start' ? 'Đã bắt đầu dịch vụ' : 'Đã hoàn tất dịch vụ');
-      await loadOrders(vehicleId);
+      message.success(action === 'start'
+        ? 'Đã bắt đầu dịch vụ'
+        : 'Đã hoàn tất dịch vụ. Hóa đơn sẽ tự phát hành khi toàn bộ dịch vụ của xe hoàn tất.');
+      await Promise.all([loadOrders(vehicleId), loadOptions()]);
     } catch (error) {
       message.error(apiError(error, 'Không thể cập nhật dịch vụ'));
     }
+  };
+
+  const refreshTimeline = async () => {
+    await Promise.all([loadOrders(vehicleId), loadOptions()]);
+    message.success('Đã làm mới tiến độ và timeline');
   };
 
   const serviceNames = useMemo(() => new Map(services.map((service) => [service.id, service.name])), [services]);
   const orderColumns: ColumnsType<ServiceOrder> = [
     { title: 'Dịch vụ', dataIndex: 'serviceId', key: 'serviceId', render: (id: string) => serviceNames.get(id) ?? id.slice(0, 8) },
     { title: 'Trạng thái', dataIndex: 'status', key: 'status', render: (status: string) => <Tag>{status}</Tag> },
+    {
+      title: 'Dự kiến hoàn thành', dataIndex: 'expectedEndAt', key: 'expectedEndAt',
+      render: (value?: string, order?: ServiceOrder) => {
+        if (order?.endAt) return <span>Thực tế: {new Date(order.endAt).toLocaleString('vi-VN')}</span>;
+        return value ? new Date(value).toLocaleString('vi-VN') : 'Chưa có thời gian dự kiến';
+      },
+    },
     {
       title: 'Bắt đầu',
       dataIndex: 'startAt',
@@ -504,14 +695,14 @@ function ServiceDispatchTab() {
 
   return (
     <Space direction="vertical" size="large" className="w-full">
-      <Card title="Điều phối dịch vụ">
+      <Card title="Điều phối dịch vụ" extra={<Button onClick={() => void refreshTimeline()}>Làm mới tiến độ</Button>}>
         <Row gutter={16} align="bottom">
           <Col xs={24} md={8}>
             <Text strong>Chọn xe trong bãi</Text>
             <Select
               className="mt-2 w-full"
               value={vehicleId}
-              onChange={setVehicleId}
+              onChange={(id) => { setOrders([]); setSelectedServices([]); setVehicleId(id); }}
               placeholder="Chọn xe"
               options={notifications.map((item) => ({
                 value: item.vehicleId,
@@ -529,9 +720,20 @@ function ServiceDispatchTab() {
               placeholder="Chọn một hoặc nhiều dịch vụ"
               options={services.map((service) => ({
                 value: service.id,
-                label: `${service.name} (${service.hourlyRate.toLocaleString('vi-VN')}/giờ)`,
+                label: `${service.name} · ${service.expectedDurationMinutes} phút · ${service.hourlyRate.toLocaleString('vi-VN')}/giờ`,
+                disabled: existingServiceIds.has(service.id),
               }))}
             />
+            {servicesToCheck.map((serviceId) => {
+              const service = services.find((item) => item.id === serviceId);
+              const availability = workerAvailability[serviceId];
+              if (!service) return null;
+              return <Alert key={serviceId} className="mt-2" showIcon
+                type={!availability ? 'info' : availability.availableCount > 0 ? 'success' : 'warning'}
+                message={!availability ? `${service.name}: kiểm tra nhân sự tại bãi...`
+                  : `${service.name}: ${availability.availableCount}/${availability.workerCount} thợ đang sẵn sàng tại bãi`}
+                description={availability?.workers.map((worker) => `${worker.name}: ${worker.available ? 'sẵn sàng' : 'đang làm'}`).join(' · ')} />;
+            })}
           </Col>
           <Col xs={24} md={4}>
             <Button type="primary" className="mt-2 w-full" loading={loading}
@@ -541,6 +743,8 @@ function ServiceDispatchTab() {
           </Col>
         </Row>
       </Card>
+      {vehicleId && orders.length > 0 && <Alert className="mb-2" showIcon type="info"
+        message={`${orders.length} dịch vụ cho xe đã chọn; dịch vụ đăng ký trước được giữ nguyên và không thể gán trùng.`} />}
       <Card title="Tiến độ dịch vụ">
         <Table rowKey="id" columns={orderColumns} dataSource={orders} pagination={{ pageSize: 8 }} />
       </Card>
@@ -548,9 +752,9 @@ function ServiceDispatchTab() {
         {orders.length ? (
           <Timeline items={orders.flatMap((order) => {
             const name = serviceNames.get(order.serviceId) ?? order.serviceId.slice(0, 8);
-            const items = [{ color: 'blue', children: `${name} — Đã phân công` }];
+            const items = [{ color: order.status === 'COMPLETED' ? 'green' : 'blue', children: `${name} — ${order.status === 'SCHEDULED' ? 'Đã đăng ký trước' : 'Đã phân công'}` }];
             if (order.startAt) {
-              items.push({ color: 'green', children: `${name} — Bắt đầu ${new Date(order.startAt).toLocaleString('vi-VN')}` });
+              items.push({ color: 'green', children: `${name} — Bắt đầu ${new Date(order.startAt).toLocaleString('vi-VN')}${order.expectedEndAt ? ` · dự kiến xong ${new Date(order.expectedEndAt).toLocaleString('vi-VN')}` : ''}` });
             }
             if (order.endAt) {
               items.push({ color: 'gray', children: `${name} — Kết thúc ${new Date(order.endAt).toLocaleString('vi-VN')} · ${Number(order.totalAmount).toLocaleString('vi-VN')}` });
@@ -750,7 +954,7 @@ function YardManagementTab({
 }
 
 export function OperationsPage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [inventory, setInventory] = useState<YardInventory[]>([]);
   const [alerts, setAlerts] = useState<YardAlert[]>([]);
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
@@ -842,7 +1046,7 @@ export function OperationsPage() {
       <Tabs
         items={[
           { key: 'prenotification', label: 'Thông báo xe trước', children: <VehicleRegistrationTab /> },
-          { key: 'gate', label: 'Check-in / Check-out', children: <GateTab yards={yards} /> },
+          { key: 'gate', label: 'Check-in / Check-out', children: <GateTab yards={yards} isAdmin={!!user?.roles.includes('ADMIN')} /> },
           { key: 'dispatch', label: 'Điều phối dịch vụ', children: <ServiceDispatchTab /> },
           {
             key: 'yards',
