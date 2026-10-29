@@ -14,6 +14,7 @@ import GoodsPage from './pages/GoodsPage';
 import ConfirmationsPage from './pages/ConfirmationsPage';
 import FinancePage from './pages/FinancePage';
 import ReportsPage from './pages/ReportsPage';
+import VehicleQrInfoPage from './pages/VehicleQrInfoPage';
 import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -22,6 +23,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/vehicle-qr" element={<VehicleQrInfoPage />} />
           <Route element={<ProtectedRoute />}>
             <Route element={<AdminLayout />}>
               <Route path="/dashboard" element={<DashboardPage />} />
