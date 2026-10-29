@@ -18,6 +18,8 @@ export interface TripSummary {
   originLatitude?: number;
   originLongitude?: number;
   destination: string;
+  destinationLatitude?: number;
+  destinationLongitude?: number;
   status: string;
 }
 

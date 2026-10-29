@@ -20,6 +20,7 @@ type RouteAlert = { id: string; tripId: string; message: string; createdAt: stri
 type TripOption = {
   id: string; tripCode?: string; tripName?: string; origin: string; destination: string;
   originLatitude?: number; originLongitude?: number;
+  destinationYardId?: string; destinationLatitude?: number; destinationLongitude?: number;
 };
 const { Title, Text } = Typography;
 
@@ -125,6 +126,8 @@ export default function TrackingPage() {
     ? [activePoint.latitude, activePoint.longitude]
     : selectedTrip?.originLatitude != null && selectedTrip.originLongitude != null
       ? [selectedTrip.originLatitude, selectedTrip.originLongitude]
+      : selectedTrip?.destinationLatitude != null && selectedTrip.destinationLongitude != null
+        ? [selectedTrip.destinationLatitude, selectedTrip.destinationLongitude]
       : [10.7769, 106.7009], [activePoint, selectedTrip]);
 
   const addGeofence = async (values: { name: string; latitude: number; longitude: number; radiusM: number }) => {
@@ -163,9 +166,9 @@ export default function TrackingPage() {
       {trips.length === 0 ? <Alert type="warning" showIcon message="Chưa có chuyến đi để theo dõi"
         description="Hãy đăng ký xe ở mục Vận hành bãi → Thông báo xe trước. Hệ thống sẽ tạo chuyến sau khi xác nhận đăng ký." /> : selectedTrip && <Alert type="info" showIcon
         message={`Điểm xuất phát đã đăng ký: ${selectedTrip.origin}`}
-        description={selectedTrip.originLatitude != null && selectedTrip.originLongitude != null
-          ? `Tọa độ điểm đầu: ${selectedTrip.originLatitude.toFixed(6)}, ${selectedTrip.originLongitude.toFixed(6)}. Đường đi tiếp tục cập nhật theo GPS xe.`
-          : 'Chưa có tọa độ GPS điểm xuất phát; đường đi sẽ hiển thị khi nhận được GPS từ xe.'} />}
+        description={`Điểm đầu: ${selectedTrip.originLatitude != null && selectedTrip.originLongitude != null
+          ? `${selectedTrip.originLatitude.toFixed(6)}, ${selectedTrip.originLongitude.toFixed(6)}` : 'chưa có tọa độ GPS'} · Bãi đến: ${selectedTrip.destination}${selectedTrip.destinationLatitude != null && selectedTrip.destinationLongitude != null
+          ? ` (${selectedTrip.destinationLatitude.toFixed(6)}, ${selectedTrip.destinationLongitude.toFixed(6)})` : ' (chưa có tọa độ bãi)'} · Đường đi thực tế cập nhật khi xe gửi GPS.`} />}
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={16}>
           <Card title="Bản đồ realtime và playback">
@@ -178,6 +181,11 @@ export default function TrackingPage() {
                 center={[selectedTrip.originLatitude, selectedTrip.originLongitude]} radius={8}
                 pathOptions={{ color: '#389e0d', fillColor: '#95de64', fillOpacity: 0.9 }}>
                 <Tooltip permanent>Điểm xuất phát</Tooltip>
+              </CircleMarker>}
+              {selectedTrip?.destinationLatitude != null && selectedTrip.destinationLongitude != null && <CircleMarker
+                center={[selectedTrip.destinationLatitude, selectedTrip.destinationLongitude]} radius={8}
+                pathOptions={{ color: '#cf1322', fillColor: '#ff7875', fillOpacity: 0.9 }}>
+                <Tooltip permanent>Bãi đến: {selectedTrip.destination}</Tooltip>
               </CircleMarker>}
               {activePoint && <CircleMarker center={mapCenter} radius={9}
                 pathOptions={{ color: activePoint.offRoute ? '#cf1322' : '#1677ff' }}>

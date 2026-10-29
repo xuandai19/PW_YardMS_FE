@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Button, DatePicker, Form, Input, InputNumber, Modal, Select, Table, Tag, Upload, message } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { Button, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Select, Table, Tag, Upload, message } from 'antd';
+import { EyeOutlined, UploadOutlined } from '@ant-design/icons';
 import { api } from '../../services/api';
 
 export default function ContractsPage() {
   const [data, setData] = useState<any[]>([]);
   const [partners, setPartners] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
+  const [viewing, setViewing] = useState<any>();
   const [form] = Form.useForm();
   const load = async () => {
     try {
@@ -42,8 +43,21 @@ export default function ContractsPage() {
       { title: 'Số hợp đồng', dataIndex: 'contractNo' }, { title: 'Loại', dataIndex: 'contractType' },
       { title: 'Bắt đầu', dataIndex: 'startDate' }, { title: 'Kết thúc', dataIndex: 'endDate' },
       { title: 'Trạng thái', dataIndex: 'status', render: (status: string) => <Tag color={status === 'ACTIVE' ? 'green' : 'red'}>{status}</Tag> },
+      { title: 'Chi tiết', key: 'details', render: (_: unknown, row: any) => <Button icon={<EyeOutlined />} onClick={() => setViewing(row)}>Xem hợp đồng</Button> },
       { title: 'Tệp', dataIndex: 'fileUrl', render: (fileUrl: string | null, row: any) => <Upload accept="application/pdf" showUploadList={false} beforeUpload={(file) => upload(row.id, file)}><Button icon={<UploadOutlined />}>{fileUrl ? 'Thay tệp' : 'Tải PDF'}</Button></Upload> },
     ]} />
+    <Modal open={!!viewing} title="Chi tiết hợp đồng" footer={<Button onClick={() => setViewing(undefined)}>Đóng</Button>} onCancel={() => setViewing(undefined)}>
+      {viewing && <Descriptions bordered column={1} size="small">
+        <Descriptions.Item label="Số hợp đồng">{viewing.contractNo}</Descriptions.Item>
+        <Descriptions.Item label="Loại hợp đồng">{viewing.contractType}</Descriptions.Item>
+        <Descriptions.Item label="Đối tác A">{partners.find((partner) => partner.id === viewing.partnerAId)?.name ?? viewing.partnerAId}</Descriptions.Item>
+        {viewing.partnerCId && <Descriptions.Item label="Đối tác C">{partners.find((partner) => partner.id === viewing.partnerCId)?.name ?? viewing.partnerCId}</Descriptions.Item>}
+        <Descriptions.Item label="Thời hạn">{viewing.startDate} – {viewing.endDate}</Descriptions.Item>
+        <Descriptions.Item label="Giá trị">{Number(viewing.contractValue).toLocaleString('vi-VN')}</Descriptions.Item>
+        <Descriptions.Item label="Trạng thái">{viewing.status}</Descriptions.Item>
+        <Descriptions.Item label="Tệp đính kèm">{viewing.fileUrl ? 'Đã tải lên' : 'Chưa có tệp'}</Descriptions.Item>
+      </Descriptions>}
+    </Modal>
     <Modal open={open} footer={null} onCancel={() => setOpen(false)} title="Tạo hợp đồng" destroyOnClose>
       <Form form={form} layout="vertical" onFinish={save} initialValues={{ contractValue: 0 }}>
         <Form.Item name="contractNo" label="Số hợp đồng" rules={[{ required: true }]}><Input /></Form.Item>

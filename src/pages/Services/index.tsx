@@ -73,15 +73,6 @@ export default function ServicesPage() {
     }
   };
 
-  const showPriceHistory = async (serviceId: string) => {
-    try {
-      const response = await api.get(`/services/${serviceId}/price-history`);
-      Modal.info({ title: 'Lịch sử giá', content: <pre>{JSON.stringify(response.data.data, null, 2)}</pre> });
-    } catch (error: any) {
-      message.error(error.response?.data?.message ?? 'Không thể tải lịch sử giá');
-    }
-  };
-
   return <>
     <div className="flex justify-between mb-4">
       <h2 className="text-xl font-semibold">Quản lý dịch vụ</h2>
@@ -94,7 +85,7 @@ export default function ServicesPage() {
       { title: 'Đơn giá', dataIndex: 'hourlyRate' },
       { title: 'Thời lượng dự kiến (phút)', dataIndex: 'expectedDurationMinutes' },
       { title: 'Đang hoạt động', dataIndex: 'active', render: (active: boolean, row: any) => <Switch checked={active} onChange={(value) => void changeActive(row, value)} /> },
-      { title: 'Thao tác', render: (_: any, row: any) => <Space><Button onClick={() => openForm(row)}>Sửa</Button><Button onClick={() => void showPriceHistory(row.id)}>Lịch sử giá</Button></Space> },
+      { title: 'Thao tác', render: (_: any, row: any) => <Space><Button onClick={() => openForm(row)}>Sửa</Button></Space> },
     ]} />
     <Modal open={open} footer={null} onCancel={() => setOpen(false)} title={editing ? 'Sửa dịch vụ' : 'Thêm dịch vụ'} destroyOnClose>
       <Form form={form} layout="vertical" onFinish={save}>
