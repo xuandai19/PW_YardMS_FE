@@ -18,8 +18,17 @@ export function LoginPage() {
     try {
       await login(values);
       const raw = localStorage.getItem('yms_user');
-      const roles = raw ? JSON.parse(raw).roles as string[] : [];
-      const target = roles.includes('ADMIN') ? '/dashboard' : roles.includes('MANAGER') ? '/operations' : '/dashboard';
+      const currentUser = raw ? JSON.parse(raw) as { roles: string[]; permissions: string[] } : { roles: [], permissions: [] };
+      const roles = currentUser.roles;
+      const permissions = currentUser.permissions;
+      const target = roles.includes('ADMIN') ? '/dashboard'
+        : permissions.some(permission => ['VEHICLE_OPERATE', 'GATE_OPERATE', 'SERVICE_DISPATCH', 'YARD_READ', 'YARD_WRITE'].includes(permission)) ? '/operations'
+          : permissions.includes('FINANCE_READ') || permissions.includes('FINANCE_WRITE') ? '/finance'
+            : permissions.includes('TRACKING_READ') || permissions.includes('TRACKING_WRITE') ? '/tracking'
+              : permissions.includes('REPORT_READ') ? '/reports'
+                : permissions.includes('GOODS_READ') || permissions.includes('GOODS_WRITE') ? '/goods'
+                  : permissions.includes('PARTNER_READ') || permissions.includes('PARTNER_WRITE') ? '/partners'
+                    : '/dashboard';
       navigate(from === '/dashboard' ? target : from, { replace: true });
     } catch {
       setError('Tên đăng nhập hoặc mật khẩu không hợp lệ.');

@@ -21,10 +21,30 @@ const menuItems = [
   { key: '/settings', icon: <SettingOutlined />, label: <Link to="/settings">Cấu hình</Link> },
 ];
 
+const menuPermissions: Record<string, string[]> = {
+  '/dashboard': ['REPORT_READ', 'REPORT_WRITE'],
+  '/operations': ['VEHICLE_OPERATE', 'GATE_OPERATE', 'SERVICE_DISPATCH', 'YARD_READ', 'YARD_WRITE'],
+  '/tracking': ['TRACKING_READ', 'TRACKING_WRITE'],
+  '/goods': ['GOODS_READ', 'GOODS_WRITE'],
+  '/confirmations': ['CONFIRMATION_READ', 'CONFIRMATION_WRITE'],
+  '/finance': ['FINANCE_READ', 'FINANCE_WRITE'],
+  '/reports': ['REPORT_READ', 'REPORT_WRITE'],
+  '/users': ['USER_READ', 'USER_WRITE'],
+  '/roles': ['USER_READ', 'USER_WRITE'],
+  '/partners': ['PARTNER_READ', 'PARTNER_WRITE'],
+  '/contracts': ['CONTRACT_READ', 'CONTRACT_WRITE'],
+  '/services': ['SERVICE_READ', 'SERVICE_WRITE'],
+};
+
 export function AdminLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const visibleMenuItems = menuItems.filter(item => {
+    if (user?.roles.includes('ADMIN')) return true;
+    if (item.key === '/users' || item.key === '/roles' || item.key === '/settings') return false;
+    return (menuPermissions[item.key] ?? []).some(permission => user?.permissions.includes(permission));
+  });
 
   const handleLogout = () => {
     logout();
@@ -35,7 +55,7 @@ export function AdminLayout() {
     <Layout className="min-h-screen">
       <Sider breakpoint="lg" collapsedWidth="0">
         <div className="px-5 py-5 text-lg font-semibold text-white">YMS Admin</div>
-        <Menu theme="dark" mode="inline" selectedKeys={[location.pathname]} items={menuItems} />
+        <Menu theme="dark" mode="inline" selectedKeys={[location.pathname]} items={visibleMenuItems} />
       </Sider>
       <Layout>
         <Header className="flex items-center justify-between bg-white px-6 shadow-sm">
