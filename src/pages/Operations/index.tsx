@@ -41,7 +41,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import axios from 'axios';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -351,8 +351,7 @@ function VehicleRegistrationTab({ yards }: { yards: Yard[] }) {
             <img alt="QR xe" className="h-64 w-64" src={`data:image/png;base64,${qr.imageBase64}`} />
             <Text type="secondary">Hết hạn: {new Date(qr.expiresAt).toLocaleString('vi-VN')}</Text>
             {qr.scanUrl && <Text>Quét bằng điện thoại để xem thông tin xe: <a href={qr.scanUrl} target="_blank" rel="noreferrer">Mở trang thông tin</a></Text>}
-            {qr.scanUrl && ['localhost', '127.0.0.1'].includes(new URL(qr.scanUrl).hostname) && <Alert type="warning" showIcon
-              message="For phone scanning, set VITE_PUBLIC_APP_URL and VITE_API_BASE_URL to LAN-reachable addresses, then restart the frontend." />}
+            {qr.scanUrl && ['localhost', '127.0.0.1'].includes(new URL(qr.scanUrl).hostname)}
           </div>
         )}
       </Modal>
@@ -373,6 +372,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
   const [yardId, setYardId] = useState<string>();
   const [checking, setChecking] = useState(false);
   const [history, setHistory] = useState<YardHistoryEntry[]>([]);
+  const [historyDetail, setHistoryDetail] = useState<YardHistoryEntry>();
   const [waiting, setWaiting] = useState<PreNotification[]>([]);
   const [manualNotificationId, setManualNotificationId] = useState<string>();
   const [manualYardId, setManualYardId] = useState<string>();
@@ -469,6 +469,9 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
     try {
       const response = await api.post('/yard-logs/check-out', { preNotificationId });
       message.success(`Đã check-out. Thời gian lưu bãi: ${formatYardDuration(response.data.data.durationSeconds)}`);
+      if (response.data.data.invoiceNo) {
+        message.success(`Đã tạo hóa đơn ${response.data.data.invoiceNo} cho đối tác A; hóa đơn nằm trong mục Công nợ và hóa đơn.`);
+      }
       notifyYardChanged();
       await Promise.all([loadHistory(), loadWaiting()]);
     } catch (error) {
@@ -490,6 +493,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
   }, [scan]);
 
   const historyColumns: ColumnsType<YardHistoryEntry> = [
+    { title: 'Đối tác A đăng ký', dataIndex: 'partnerAName', key: 'partnerAName', render: (value: string, row) => `${row.partnerACode} — ${value}` },
     { title: 'Xe', dataIndex: 'plateNumber', key: 'plateNumber', render: (value, row) => `${value} — ${row.driverName}` },
     { title: 'Bãi', dataIndex: 'yardCode', key: 'yardCode', render: (value, row) => `${value} — ${row.yardName}` },
     {
@@ -513,9 +517,10 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
     {
       title: 'Thao tác',
       key: 'action',
-      render: (_, row) => row.checkOutAt ? null : (
-        <Button danger onClick={() => void checkOut(row.preNotificationId)}>Check-out</Button>
-      ),
+      render: (_, row) => <Space>
+        <Button onClick={() => setHistoryDetail(row)}>Xem thông tin xe</Button>
+        {!row.checkOutAt && <Button danger onClick={() => void checkOut(row.preNotificationId)}>Check-out</Button>}
+      </Space>,
     },
   ];
 
@@ -589,6 +594,19 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
       <Card title="Lịch sử ra vào bãi">
         <Table rowKey="id" columns={historyColumns} dataSource={history} pagination={{ pageSize: 8 }} />
       </Card>
+      <Modal open={!!historyDetail} title="Thông tin xe trong lịch sử ra vào bãi"
+        footer={null} onCancel={() => setHistoryDetail(undefined)}>
+        {historyDetail && <Descriptions bordered column={1} size="small">
+          <Descriptions.Item label="Biển số">{historyDetail.plateNumber}</Descriptions.Item>
+          <Descriptions.Item label="Loại xe">{historyDetail.vehicleType || 'Chưa cập nhật'}</Descriptions.Item>
+          <Descriptions.Item label="Đơn vị vận chuyển">{historyDetail.carrierCompany || 'Chưa cập nhật'}</Descriptions.Item>
+          <Descriptions.Item label="Tài xế">{historyDetail.driverName}</Descriptions.Item>
+          <Descriptions.Item label="Đối tác A đăng ký">{historyDetail.partnerACode} — {historyDetail.partnerAName}</Descriptions.Item>
+          <Descriptions.Item label="Bãi">{historyDetail.yardCode} — {historyDetail.yardName}</Descriptions.Item>
+          <Descriptions.Item label="Check-in">{new Date(historyDetail.checkInAt).toLocaleString('vi-VN')}</Descriptions.Item>
+          <Descriptions.Item label="Check-out">{historyDetail.checkOutAt ? new Date(historyDetail.checkOutAt).toLocaleString('vi-VN') : 'Xe đang trong bãi'}</Descriptions.Item>
+        </Descriptions>}
+      </Modal>
     </Space>
   );
 }
@@ -1044,6 +1062,18 @@ export function OperationsPage() {
   }, [token]);
 
   const yards = useMemo(() => inventory.map((item) => item.yard), [inventory]);
+  const can = (permission: string) => !!user?.roles.includes('ADMIN')
+    || user?.permissions.includes('*') === true
+    || user?.permissions.includes(permission) === true;
+  const operationTabs: { key: string; label: string; children: ReactNode }[] = [];
+  if (can('VEHICLE_OPERATE')) operationTabs.push({ key: 'prenotification', label: 'Thông báo xe trước', children: <VehicleRegistrationTab yards={yards} /> });
+  if (can('GATE_OPERATE')) operationTabs.push({ key: 'gate', label: 'Check-in / Check-out', children: <GateTab yards={yards} isAdmin={!!user?.roles.includes('ADMIN')} /> });
+  if (can('SERVICE_DISPATCH')) operationTabs.push({ key: 'dispatch', label: 'Điều phối dịch vụ', children: <ServiceDispatchTab /> });
+  if (can('YARD_READ') || can('YARD_WRITE')) operationTabs.push({
+      key: 'yards',
+      label: 'Quản lý bãi',
+      children: <YardManagementTab inventory={inventory} alerts={alerts} onInventoryRefresh={refreshYards} />,
+    });
 
   return (
     <div className="space-y-4">
@@ -1057,16 +1087,7 @@ export function OperationsPage() {
         </Tag>
       </div>
       <Tabs
-        items={[
-          { key: 'prenotification', label: 'Thông báo xe trước', children: <VehicleRegistrationTab yards={yards} /> },
-          { key: 'gate', label: 'Check-in / Check-out', children: <GateTab yards={yards} isAdmin={!!user?.roles.includes('ADMIN')} /> },
-          { key: 'dispatch', label: 'Điều phối dịch vụ', children: <ServiceDispatchTab /> },
-          {
-            key: 'yards',
-            label: 'Quản lý bãi',
-            children: <YardManagementTab inventory={inventory} alerts={alerts} onInventoryRefresh={refreshYards} />,
-          },
-        ]}
+        items={operationTabs}
       />
     </div>
   );

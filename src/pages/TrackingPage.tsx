@@ -1,7 +1,7 @@
 import { Client } from '@stomp/stompjs';
-import { Alert, Button, Card, Col, Form, Input, InputNumber, message, Row, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, message, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Circle, CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap } from 'react-leaflet';
+import { Circle, CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import axios from 'axios';
 import 'leaflet/dist/leaflet.css';
 import { api, ACCESS_TOKEN_KEY } from '../services/api';
@@ -22,6 +22,8 @@ type TripOption = {
   originLatitude?: number; originLongitude?: number;
   destinationYardId?: string; destinationLatitude?: number; destinationLongitude?: number;
 };
+type YardOption = { id: string; name: string; address: string; latitude?: number; longitude?: number };
+type RouteEstimate = { coordinates: [number, number][]; distanceMeters: number; durationSeconds: number };
 const { Title, Text } = Typography;
 
 function errorText(error: unknown): string {
@@ -29,41 +31,61 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'Thao tác thất bại';
 }
 
-function FollowVehicle({ center }: { center: [number, number] }) {
+function FitRouteBounds({ coordinates }: { coordinates: [number, number][] }) {
   const map = useMap();
   useEffect(() => {
-    map.setView(center, map.getZoom(), { animate: true });
-  }, [center, map]);
+    if (coordinates.length > 1) {
+      map.fitBounds(coordinates, { padding: [36, 36], maxZoom: 13 });
+    } else if (coordinates.length === 1) {
+      map.setView(coordinates[0], 13, { animate: true });
+    }
+  }, [coordinates, map]);
+  return null;
+}
+
+function CoordinatePicker({ onPick }: { onPick: (position: [number, number]) => void }) {
+  useMapEvents({ click: event => onPick([event.latlng.lat, event.latlng.lng]) });
   return null;
 }
 
 export default function TrackingPage() {
   const [tripId, setTripId] = useState('');
   const [trips, setTrips] = useState<TripOption[]>([]);
+  const [yards, setYards] = useState<YardOption[]>([]);
   const [points, setPoints] = useState<RoutePoint[]>([]);
   const [geofences, setGeofences] = useState<Geofence[]>([]);
+  const [routeEstimate, setRouteEstimate] = useState<RouteEstimate>();
+  const [routeError, setRouteError] = useState('');
+  const [routeRequestedTripId, setRouteRequestedTripId] = useState('');
+  const [routeRequestSeq, setRouteRequestSeq] = useState(0);
+  const [routing, setRouting] = useState(false);
   const [alerts, setAlerts] = useState<RouteAlert[]>([]);
   const [playIndex, setPlayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [fenceForm] = Form.useForm();
+  const [pickTarget, setPickTarget] = useState<'origin' | 'destination'>();
+  const [pickedPosition, setPickedPosition] = useState<[number, number]>();
+  const [savingCoordinates, setSavingCoordinates] = useState(false);
 
   useEffect(() => {
-    void api.get('/trips').then((response) => setTrips(response.data.data))
-      .catch((error: unknown) => message.error(errorText(error)));
+    void Promise.all([api.get('/trips'), api.get('/yards')]).then(([tripResponse, yardResponse]) => {
+      setTrips(tripResponse.data.data);
+      setYards(yardResponse.data.data);
+    }).catch((error: unknown) => message.error(errorText(error)));
   }, []);
 
   const loadTrip = useCallback(async (id: string) => {
     if (!id.trim()) return;
     setLoading(true);
     try {
-      const [history, fences] = await Promise.all([
-        api.get(`/tracking/trips/${id}/history`),
-        api.get(`/tracking/trips/${id}/geofences`),
-      ]);
+      const history = await api.get(`/tracking/trips/${id}/history`);
       setPoints(history.data.data);
-      setGeofences(fences.data.data);
+      void api.get(`/tracking/trips/${id}/geofences`)
+        .then(response => setGeofences(response.data.data))
+        .catch(() => setGeofences([]));
       setPlayIndex(0);
+      setRouteRequestedTripId(id);
+      setRouteRequestSeq(sequence => sequence + 1);
     } catch (error) {
       message.error(errorText(error));
     } finally {
@@ -122,28 +144,85 @@ export default function TrackingPage() {
     .map((point) => [point.latitude, point.longitude] as [number, number]), [points, playIndex, playing]);
   const activePoint = points[Math.max(0, playing ? playIndex : points.length - 1)];
   const selectedTrip = trips.find((trip) => trip.id === tripId);
+  const selectedYard = selectedTrip && (yards.find(yard => yard.id === selectedTrip.destinationYardId)
+    ?? yards.find(yard => yard.name.trim().toLowerCase() === selectedTrip.destination.trim().toLowerCase()));
+  const originPosition = selectedTrip?.originLatitude != null && selectedTrip.originLongitude != null
+    ? [selectedTrip.originLatitude, selectedTrip.originLongitude] as [number, number] : undefined;
+  const destinationPosition = selectedTrip?.destinationLatitude != null && selectedTrip.destinationLongitude != null
+    ? [selectedTrip.destinationLatitude, selectedTrip.destinationLongitude] as [number, number]
+    : selectedYard?.latitude != null && selectedYard.longitude != null
+      ? [selectedYard.latitude, selectedYard.longitude] as [number, number] : undefined;
+  const mapRouteCoordinates = useMemo<[number, number][]>(() => routeEstimate?.coordinates
+    ?? [originPosition, destinationPosition].filter((point): point is [number, number] => !!point),
+  [routeEstimate, originPosition?.[0], originPosition?.[1], destinationPosition?.[0], destinationPosition?.[1]]);
   const mapCenter = useMemo<[number, number]>(() => activePoint
     ? [activePoint.latitude, activePoint.longitude]
-    : selectedTrip?.originLatitude != null && selectedTrip.originLongitude != null
-      ? [selectedTrip.originLatitude, selectedTrip.originLongitude]
-      : selectedTrip?.destinationLatitude != null && selectedTrip.destinationLongitude != null
-        ? [selectedTrip.destinationLatitude, selectedTrip.destinationLongitude]
+    : originPosition
+      ? originPosition
+      : destinationPosition
+        ? destinationPosition
       : [10.7769, 106.7009], [activePoint, selectedTrip]);
 
-  const addGeofence = async (values: { name: string; latitude: number; longitude: number; radiusM: number }) => {
-    if (!tripId) {
-      message.warning('Nhập mã chuyến đi trước khi tạo geofence');
-      return;
-    }
+  const savePickedPosition = async () => {
+    if (!selectedTrip || !pickedPosition || !pickTarget) return;
+    setSavingCoordinates(true);
     try {
-      await api.post(`/tracking/trips/${tripId}/geofences`, values);
-      fenceForm.resetFields();
-      await loadTrip(tripId);
-      message.success('Đã thêm vùng geofence');
+      const body = pickTarget === 'origin'
+        ? { originLatitude: pickedPosition[0], originLongitude: pickedPosition[1] }
+        : { destinationLatitude: pickedPosition[0], destinationLongitude: pickedPosition[1] };
+      const response = await api.patch(`/trips/${selectedTrip.id}/coordinates`, body);
+      setTrips(current => current.map(trip => trip.id === selectedTrip.id ? response.data.data : trip));
+      setPickTarget(undefined);
+      setPickedPosition(undefined);
+      message.success('Đã lưu tọa độ chuyến xe. Đang tải lại tuyến đường.');
+      await loadTrip(selectedTrip.id);
     } catch (error) {
       message.error(errorText(error));
+    } finally {
+      setSavingCoordinates(false);
     }
   };
+
+  useEffect(() => {
+    if (routeRequestedTripId !== tripId || !selectedTrip) return undefined;
+    if (!originPosition || !destinationPosition) {
+      setRouteEstimate(undefined);
+      setRouting(false);
+      setRouteError('Chưa có đủ tọa độ điểm xuất phát và bãi đích. Hãy lấy GPS điểm xuất phát khi đăng ký xe và nhập tọa độ cho bãi.');
+      return undefined;
+    }
+    const controller = new AbortController();
+    setRouting(true);
+    setRouteError('');
+    setRouteEstimate(undefined);
+    const routerBase = import.meta.env.VITE_OSRM_ROUTER_URL || 'https://router.project-osrm.org/route/v1/driving';
+    const coordinates = `${originPosition[1]},${originPosition[0]};${destinationPosition[1]},${destinationPosition[0]}`;
+    void fetch(`${routerBase}/${coordinates}?overview=full&geometries=geojson`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error(`Định tuyến trả về HTTP ${response.status}`);
+        return response.json() as Promise<{
+          code: string;
+          routes?: { distance: number; duration: number; geometry: { coordinates: [number, number][] } }[];
+        }>;
+      })
+      .then(result => {
+        const route = result.routes?.[0];
+        if (result.code !== 'Ok' || !route || route.geometry.coordinates.length < 2) {
+          throw new Error('Không tìm thấy đường bộ giữa điểm xuất phát và bãi đã chọn.');
+        }
+        setRouteEstimate({
+          coordinates: route.geometry.coordinates.map(([longitude, latitude]) => [latitude, longitude]),
+          distanceMeters: route.distance,
+          durationSeconds: route.duration,
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setRouteError(error instanceof Error ? error.message : 'Không tải được tuyến đường bộ.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setRouting(false); });
+    return () => controller.abort();
+  }, [routeRequestedTripId, routeRequestSeq, tripId, selectedTrip, originPosition?.[0], originPosition?.[1], destinationPosition?.[0], destinationPosition?.[1]]);
 
   return (
     <Space direction="vertical" size="large" className="w-full">
@@ -154,38 +233,65 @@ export default function TrackingPage() {
             setTripId(id);
             setPoints([]);
             setGeofences([]);
+            setRouteEstimate(undefined);
+            setRouteError('');
+            setRouteRequestedTripId('');
             setPlayIndex(0);
             setPlaying(false);
           }} showSearch optionFilterProp="label"
             options={trips.map((trip) => ({ value: trip.id, label: `${trip.tripName ?? `${trip.origin} → ${trip.destination}`} · ${trip.tripCode ?? trip.id}` }))}
             notFoundContent="Chưa có chuyến đi. Hãy đăng ký xe trước."
             placeholder="Chọn chuyến đi" />
-          <Button type="primary" disabled={!tripId} loading={loading} onClick={() => void loadTrip(tripId)}>Tải hành trình</Button>
+          <Button type="primary" disabled={!tripId || loading || routing} loading={loading || routing} onClick={() => void loadTrip(tripId)}>Tải hành trình</Button>
         </Space.Compact>
       </Card>
+      {routeRequestedTripId === tripId && selectedTrip && (routeError
+        ? <Alert type="warning" showIcon message={routeError} />
+        : routing ? <Alert type="info" showIcon message="Đang tải tuyến đường bộ từ điểm xuất phát tới bãi đích…" />
+          : routeEstimate && <Alert type="success" showIcon
+            message={`Tuyến đường bộ: ${(routeEstimate.distanceMeters / 1000).toFixed(1)} km · khoảng ${Math.round(routeEstimate.durationSeconds / 60)} phút`}
+            description="Đường màu cam là tuyến đường bộ dự kiến; đường màu xanh là hành trình GPS thực tế đã ghi nhận." />)}
       {trips.length === 0 ? <Alert type="warning" showIcon message="Chưa có chuyến đi để theo dõi"
         description="Hãy đăng ký xe ở mục Vận hành bãi → Thông báo xe trước. Hệ thống sẽ tạo chuyến sau khi xác nhận đăng ký." /> : selectedTrip && <Alert type="info" showIcon
         message={`Điểm xuất phát đã đăng ký: ${selectedTrip.origin}`}
-        description={`Điểm đầu: ${selectedTrip.originLatitude != null && selectedTrip.originLongitude != null
-          ? `${selectedTrip.originLatitude.toFixed(6)}, ${selectedTrip.originLongitude.toFixed(6)}` : 'chưa có tọa độ GPS'} · Bãi đến: ${selectedTrip.destination}${selectedTrip.destinationLatitude != null && selectedTrip.destinationLongitude != null
-          ? ` (${selectedTrip.destinationLatitude.toFixed(6)}, ${selectedTrip.destinationLongitude.toFixed(6)})` : ' (chưa có tọa độ bãi)'} · Đường đi thực tế cập nhật khi xe gửi GPS.`} />}
+        description={`Điểm đầu: ${originPosition ? `${originPosition[0].toFixed(6)}, ${originPosition[1].toFixed(6)}` : 'chưa có tọa độ GPS'} · Bãi đến: ${selectedYard?.name ?? selectedTrip.destination}${destinationPosition
+          ? ` (${destinationPosition[0].toFixed(6)}, ${destinationPosition[1].toFixed(6)})` : ' (chưa có tọa độ bãi)'} · Đường đi thực tế cập nhật khi xe gửi GPS.`} />}
+      {selectedTrip && <Card size="small" title="Bổ sung tọa độ cho chuyến xe">
+        <Space wrap>
+          <Button onClick={() => { setPickTarget('origin'); setPickedPosition(undefined); }}>Chọn điểm xuất phát trên bản đồ</Button>
+          <Button onClick={() => { setPickTarget('destination'); setPickedPosition(undefined); }}>Chọn vị trí bãi đến trên bản đồ</Button>
+          {pickTarget && <Text type="secondary">Bấm vào bản đồ bên dưới để đặt {pickTarget === 'origin' ? 'điểm xuất phát' : 'bãi đến'}{pickedPosition ? `: ${pickedPosition[0].toFixed(6)}, ${pickedPosition[1].toFixed(6)}` : ''}.</Text>}
+          {pickTarget && <Button type="primary" disabled={!pickedPosition} loading={savingCoordinates} onClick={() => void savePickedPosition()}>Lưu tọa độ</Button>}
+          {pickTarget && <Button onClick={() => { setPickTarget(undefined); setPickedPosition(undefined); }}>Hủy</Button>}
+        </Space>
+        <div className="mt-2"><Text type="secondary">Có thể chọn một điểm đại diện trong khu vực. Tọa độ được lưu cho chuyến này và dùng để tính tuyến đường.</Text></div>
+      </Card>}
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={16}>
           <Card title="Bản đồ realtime và playback">
             <MapContainer center={mapCenter} zoom={13} scrollWheelZoom className="h-[480px] w-full rounded-lg">
-              <FollowVehicle center={mapCenter} />
+              {pickTarget && <CoordinatePicker onPick={setPickedPosition} />}
+              <FitRouteBounds coordinates={mapRouteCoordinates} />
               <TileLayer attribution="&copy; OpenStreetMap contributors"
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              {routeEstimate && <Polyline positions={routeEstimate.coordinates}
+                pathOptions={{ color: '#fa8c16', weight: 5, opacity: 0.9 }} />}
+              {routeError && mapRouteCoordinates.length > 1 && <Polyline positions={mapRouteCoordinates}
+                pathOptions={{ color: '#faad14', weight: 4, opacity: 0.8, dashArray: '8 8' }} />}
               {route.length > 1 && <Polyline positions={route} pathOptions={{ color: '#1677ff', weight: 4 }} />}
-              {selectedTrip?.originLatitude != null && selectedTrip.originLongitude != null && <CircleMarker
-                center={[selectedTrip.originLatitude, selectedTrip.originLongitude]} radius={8}
+              {originPosition && <CircleMarker
+                center={originPosition} radius={8}
                 pathOptions={{ color: '#389e0d', fillColor: '#95de64', fillOpacity: 0.9 }}>
                 <Tooltip permanent>Điểm xuất phát</Tooltip>
               </CircleMarker>}
-              {selectedTrip?.destinationLatitude != null && selectedTrip.destinationLongitude != null && <CircleMarker
-                center={[selectedTrip.destinationLatitude, selectedTrip.destinationLongitude]} radius={8}
+              {destinationPosition && <CircleMarker
+                center={destinationPosition} radius={8}
                 pathOptions={{ color: '#cf1322', fillColor: '#ff7875', fillOpacity: 0.9 }}>
-                <Tooltip permanent>Bãi đến: {selectedTrip.destination}</Tooltip>
+                <Tooltip permanent>Bãi đến: {selectedYard?.name ?? selectedTrip?.destination}</Tooltip>
+              </CircleMarker>}
+              {pickedPosition && <CircleMarker center={pickedPosition} radius={10}
+                pathOptions={{ color: '#722ed1', fillColor: '#b37feb', fillOpacity: 0.9 }}>
+                <Tooltip permanent>Điểm vừa chọn</Tooltip>
               </CircleMarker>}
               {activePoint && <CircleMarker center={mapCenter} radius={9}
                 pathOptions={{ color: activePoint.offRoute ? '#cf1322' : '#1677ff' }}>
@@ -205,17 +311,7 @@ export default function TrackingPage() {
                 ? new Date(activePoint.recordedAt).toLocaleString('vi-VN') : 'Chưa có vị trí'}</Text>
             </div>
           </Card>
-          <Card className="mt-4" title="Cấu hình vùng geofence">
-            <Form form={fenceForm} layout="vertical" onFinish={addGeofence}>
-              <Row gutter={12}>
-                <Col xs={24} md={6}><Form.Item name="name" label="Tên vùng" rules={[{ required: true }]}><Input /></Form.Item></Col>
-                <Col xs={12} md={5}><Form.Item name="latitude" label="Vĩ độ" rules={[{ required: true }]}><InputNumber className="w-full" min={-90} max={90} step={0.0001} /></Form.Item></Col>
-                <Col xs={12} md={5}><Form.Item name="longitude" label="Kinh độ" rules={[{ required: true }]}><InputNumber className="w-full" min={-180} max={180} step={0.0001} /></Form.Item></Col>
-                <Col xs={12} md={5}><Form.Item name="radiusM" label="Bán kính (m)" rules={[{ required: true }]}><InputNumber className="w-full" min={1} /></Form.Item></Col>
-                <Col xs={12} md={3} className="flex items-end"><Button htmlType="submit" type="primary">Thêm</Button></Col>
-              </Row>
-            </Form>
-          </Card>
+
         </Col>
         <Col xs={24} xl={8}>
           <Card title="Cảnh báo lệch tuyến">
