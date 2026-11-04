@@ -1,0 +1,77 @@
+
+# =====================================
+# Dependencies
+# =====================================
+node_modules/
+.pnp/
+.pnp.js
+
+# =====================================
+# Build output
+# =====================================
+dist/
+build/
+out/
+.next/
+.nuxt/
+.output/
+
+# =====================================
+# Environment variables
+# =====================================
+.env
+.env.*
+!.env.example
+!.env.development.example
+!.env.production.example
+
+# =====================================
+# Logs
+# =====================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# =====================================
+# Testing
+# =====================================
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+cypress/videos/
+cypress/screenshots/
+
+# =====================================
+# Cache
+# =====================================
+.cache/
+.vite/
+.eslintcache
+.stylelintcache
+.turbo/
+
+# =====================================
+# IDE
+# =====================================
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# =====================================
+# Operating System
+# =====================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# =====================================
+# Temporary files
+# =====================================
+*.tmp
+*.temp
+*.swp
+*.swo
