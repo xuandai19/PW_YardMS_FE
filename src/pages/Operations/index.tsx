@@ -41,7 +41,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import axios from 'axios';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -67,6 +67,25 @@ const ORIGIN_ADDRESS_SUGGESTIONS = [
   'Bãi xe Long Bình, TP. Thủ Đức, TP. Hồ Chí Minh',
 ].map((value) => ({ value }));
 
+function localDateTimeValue(timestamp: number): string {
+  const date = new Date(timestamp);
+  return new Date(timestamp - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function tokenFromQr(rawValue: string): string {
+  try {
+    const token = new URL(rawValue).searchParams.get('token');
+    if (token) return token;
+  } catch {
+    // Some QR codes contain the signed token directly.
+  }
+  return rawValue.trim();
+}
+
+function notifyYardChanged() {
+  window.dispatchEvent(new Event('yms-yard-changed'));
+}
+
 function apiError(error: unknown, fallback: string): string {
   if (axios.isAxiosError<{ message?: string }>(error)) {
     return error.response?.data?.message ?? fallback;
@@ -74,14 +93,15 @@ function apiError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-function VehicleRegistrationTab() {
+function VehicleRegistrationTab({ yards }: { yards: Yard[] }) {
   const [form] = Form.useForm();
   const [partners, setPartners] = useState<{ id: string; name: string; code: string }[]>([]);
   const [services, setServices] = useState<ServiceOption[]>([]);
   const [notifications, setNotifications] = useState<PreNotification[]>([]);
   const [trips, setTrips] = useState<TripSummary[]>([]);
   const [saving, setSaving] = useState(false);
-  const [qr, setQr] = useState<{ imageBase64: string; expiresAt: string; token: string }>();
+  const [qr, setQr] = useState<{ imageBase64: string; expiresAt: string; token: string; scanUrl?: string }>();
+  const [minimumArrival, setMinimumArrival] = useState(() => localDateTimeValue(Date.now() + 4 * 60 * 60 * 1000));
   const [originCoordinates, setOriginCoordinates] = useState('');
   const [locatingOrigin, setLocatingOrigin] = useState(false);
 
@@ -107,6 +127,13 @@ function VehicleRegistrationTab() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setMinimumArrival(localDateTimeValue(Date.now() + 4 * 60 * 60 * 1000));
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const register = async (values: {
     partnerAId: string;
     plateNumber: string;
@@ -118,6 +145,7 @@ function VehicleRegistrationTab() {
     startAddress: string;
     originLatitude?: number;
     originLongitude?: number;
+    targetYardId: string;
     serviceIds?: string[];
   }) => {
     setSaving(true);
@@ -126,6 +154,7 @@ function VehicleRegistrationTab() {
         ...values,
         plannedArrival: new Date(values.plannedArrival).toISOString(),
         serviceIds: values.serviceIds ?? [],
+        targetYardId: values.targetYardId,
       });
       form.resetFields();
       setOriginCoordinates('');
@@ -140,7 +169,8 @@ function VehicleRegistrationTab() {
 
   const issueQr = async (id: string) => {
     try {
-      const response = await api.post(`/vehicles/pre-notifications/${id}/qr`);
+      const appUrl = import.meta.env.VITE_PUBLIC_APP_URL || window.location.origin;
+      const response = await api.post(`/vehicles/pre-notifications/${id}/qr`, undefined, { params: { appUrl } });
       setQr(response.data.data);
     } catch (error) {
       message.error(apiError(error, 'Không thể tạo QR cho xe'));
@@ -163,9 +193,15 @@ function VehicleRegistrationTab() {
       });
       const latitude = Number(position.coords.latitude.toFixed(7));
       const longitude = Number(position.coords.longitude.toFixed(7));
-      form.setFieldsValue({ originLatitude: latitude, originLongitude: longitude });
-      setOriginCoordinates(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-      message.success('Đã xác định tọa độ xuất phát. Hãy kiểm tra hoặc nhập tên địa chỉ để dễ nhận biết.');
+      const enteredAddress = String(form.getFieldValue('startAddress') ?? '').trim();
+      form.setFieldsValue({
+        originLatitude: latitude,
+        originLongitude: longitude,
+        startAddress: enteredAddress || `Vị trí GPS (${latitude.toFixed(6)}, ${longitude.toFixed(6)})`,
+      });
+      const accuracy = Math.round(position.coords.accuracy);
+      setOriginCoordinates(`${latitude.toFixed(6)}, ${longitude.toFixed(6)} (sai số khoảng ±${accuracy} m)`);
+      message.success('Đã lưu tọa độ GPS xuất phát; điểm này sẽ được đánh dấu trên bản đồ theo dõi hành trình.');
     } catch (error) {
       const geoError = error as GeolocationPositionError;
       message.error(geoError.code === 1
@@ -243,7 +279,7 @@ function VehicleRegistrationTab() {
                 { validator: (_, value: string | undefined) => !value || new Date(value).getTime() >= Date.now() + 4 * 60 * 60 * 1000
                   ? Promise.resolve() : Promise.reject(new Error('Thời gian đến phải cách hiện tại ít nhất 4 giờ. Hãy chọn giờ muộn hơn.')) },
               ]}>
-                <Input type="datetime-local" />
+                <Input type="datetime-local" min={minimumArrival} />
               </Form.Item>
             </Col>
             <Col xs={24}>
@@ -264,6 +300,13 @@ function VehicleRegistrationTab() {
                 : 'Bạn có thể nhập địa chỉ hoặc lấy tọa độ GPS hiện tại.'}</Text>
               <Form.Item name="originLatitude" hidden><InputNumber /></Form.Item>
               <Form.Item name="originLongitude" hidden><InputNumber /></Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="targetYardId" label="Bãi xe muốn tới" rules={[{ required: true, message: 'Chọn bãi xe đích' }]}>
+                <Select showSearch optionFilterProp="label" options={yards.filter(yard => yard.status === 'ACTIVE').map(yard => ({
+                  value: yard.id, label: `${yard.code} — ${yard.name} · ${yard.address}`,
+                }))} placeholder="Chọn bãi xe đích" />
+              </Form.Item>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item name="driverName" label="Tên tài xế" rules={[{ required: true, message: 'Nhập tên tài xế' }]}>
@@ -307,6 +350,8 @@ function VehicleRegistrationTab() {
           <div className="flex flex-col items-center gap-3">
             <img alt="QR xe" className="h-64 w-64" src={`data:image/png;base64,${qr.imageBase64}`} />
             <Text type="secondary">Hết hạn: {new Date(qr.expiresAt).toLocaleString('vi-VN')}</Text>
+            {qr.scanUrl && <Text>Quét bằng điện thoại để xem thông tin xe: <a href={qr.scanUrl} target="_blank" rel="noreferrer">Mở trang thông tin</a></Text>}
+            {qr.scanUrl && ['localhost', '127.0.0.1'].includes(new URL(qr.scanUrl).hostname)}
           </div>
         )}
       </Modal>
@@ -327,6 +372,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
   const [yardId, setYardId] = useState<string>();
   const [checking, setChecking] = useState(false);
   const [history, setHistory] = useState<YardHistoryEntry[]>([]);
+  const [historyDetail, setHistoryDetail] = useState<YardHistoryEntry>();
   const [waiting, setWaiting] = useState<PreNotification[]>([]);
   const [manualNotificationId, setManualNotificationId] = useState<string>();
   const [manualYardId, setManualYardId] = useState<string>();
@@ -366,11 +412,13 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
     lastScannedToken.current = value;
     setChecking(true);
     try {
-      const response = await api.post('/yard-logs/scan', { token: value });
-      setToken(value);
+      const scannedToken = tokenFromQr(value);
+      const response = await api.post('/yard-logs/scan', { token: scannedToken });
+      setToken(scannedToken);
       setVehicle(response.data.data);
       message.success(`Đã nhận diện xe ${response.data.data.plateNumber}`);
     } catch (error) {
+      lastScannedToken.current = '';
       message.error(apiError(error, 'QR không hợp lệ hoặc đã hết hạn'));
     } finally {
       scanBusy.current = false;
@@ -383,6 +431,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
     setChecking(true);
     try {
       await api.post('/yard-logs/check-in', { token, yardId });
+      notifyYardChanged();
       message.success(`Đã check-in xe ${vehicle.plateNumber}`);
       setVehicle(undefined);
       setToken('');
@@ -404,6 +453,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
         preNotificationId: manualNotificationId,
         yardId: manualYardId,
       });
+      notifyYardChanged();
       message.success('Đã xác nhận xe vào bãi thủ công');
       setManualNotificationId(undefined);
       setManualYardId(undefined);
@@ -419,7 +469,11 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
     try {
       const response = await api.post('/yard-logs/check-out', { preNotificationId });
       message.success(`Đã check-out. Thời gian lưu bãi: ${formatYardDuration(response.data.data.durationSeconds)}`);
-      await loadHistory();
+      if (response.data.data.invoiceNo) {
+        message.success(`Đã tạo hóa đơn ${response.data.data.invoiceNo} cho đối tác A; hóa đơn nằm trong mục Công nợ và hóa đơn.`);
+      }
+      notifyYardChanged();
+      await Promise.all([loadHistory(), loadWaiting()]);
     } catch (error) {
       message.error(apiError(error, 'Không thể check-out xe'));
     }
@@ -439,6 +493,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
   }, [scan]);
 
   const historyColumns: ColumnsType<YardHistoryEntry> = [
+    { title: 'Đối tác A đăng ký', dataIndex: 'partnerAName', key: 'partnerAName', render: (value: string, row) => `${row.partnerACode} — ${value}` },
     { title: 'Xe', dataIndex: 'plateNumber', key: 'plateNumber', render: (value, row) => `${value} — ${row.driverName}` },
     { title: 'Bãi', dataIndex: 'yardCode', key: 'yardCode', render: (value, row) => `${value} — ${row.yardName}` },
     {
@@ -462,9 +517,10 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
     {
       title: 'Thao tác',
       key: 'action',
-      render: (_, row) => row.checkOutAt ? null : (
-        <Button danger onClick={() => void checkOut(row.preNotificationId)}>Check-out</Button>
-      ),
+      render: (_, row) => <Space>
+        <Button onClick={() => setHistoryDetail(row)}>Xem thông tin xe</Button>
+        {!row.checkOutAt && <Button danger onClick={() => void checkOut(row.preNotificationId)}>Check-out</Button>}
+      </Space>,
     },
   ];
 
@@ -500,18 +556,7 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
         <Row gutter={24}>
           <Col xs={24} lg={12}>
             <div id="qr-reader" className="min-h-64 w-full" />
-            <Text type="secondary"><CameraOutlined /> Cho phép camera hoặc nhập QR bên dưới.</Text>
-            <Input.Search
-              className="mt-3"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              onSearch={(value) => {
-                lastScannedToken.current = '';
-                void scan(value);
-              }}
-              enterButton="Kiểm tra QR"
-              placeholder="Dán nội dung QR để kiểm tra"
-            />
+            <Text type="secondary"><CameraOutlined /> Cho ph?p camera v? h??ng camera v?o m? QR tr?n phi?u xe.</Text>
           </Col>
           <Col xs={24} lg={12}>
             {checking && <Spin />}
@@ -549,6 +594,19 @@ function GateTab({ yards, isAdmin }: { yards: Yard[]; isAdmin: boolean }) {
       <Card title="Lịch sử ra vào bãi">
         <Table rowKey="id" columns={historyColumns} dataSource={history} pagination={{ pageSize: 8 }} />
       </Card>
+      <Modal open={!!historyDetail} title="Thông tin xe trong lịch sử ra vào bãi"
+        footer={null} onCancel={() => setHistoryDetail(undefined)}>
+        {historyDetail && <Descriptions bordered column={1} size="small">
+          <Descriptions.Item label="Biển số">{historyDetail.plateNumber}</Descriptions.Item>
+          <Descriptions.Item label="Loại xe">{historyDetail.vehicleType || 'Chưa cập nhật'}</Descriptions.Item>
+          <Descriptions.Item label="Đơn vị vận chuyển">{historyDetail.carrierCompany || 'Chưa cập nhật'}</Descriptions.Item>
+          <Descriptions.Item label="Tài xế">{historyDetail.driverName}</Descriptions.Item>
+          <Descriptions.Item label="Đối tác A đăng ký">{historyDetail.partnerACode} — {historyDetail.partnerAName}</Descriptions.Item>
+          <Descriptions.Item label="Bãi">{historyDetail.yardCode} — {historyDetail.yardName}</Descriptions.Item>
+          <Descriptions.Item label="Check-in">{new Date(historyDetail.checkInAt).toLocaleString('vi-VN')}</Descriptions.Item>
+          <Descriptions.Item label="Check-out">{historyDetail.checkOutAt ? new Date(historyDetail.checkOutAt).toLocaleString('vi-VN') : 'Xe đang trong bãi'}</Descriptions.Item>
+        </Descriptions>}
+      </Modal>
     </Space>
   );
 }
@@ -615,6 +673,21 @@ function ServiceDispatchTab() {
 
   useEffect(() => {
     void loadOptions();
+  }, [loadOptions]);
+
+  useEffect(() => {
+    if (vehicleId && !notifications.some(item => item.vehicleId === vehicleId)) {
+      setVehicleId(undefined);
+      setOrders([]);
+      setSelectedServices([]);
+      setWorkerAvailability({});
+    }
+  }, [notifications, vehicleId]);
+
+  useEffect(() => {
+    const refresh = () => { void loadOptions(); };
+    window.addEventListener('yms-yard-changed', refresh);
+    return () => window.removeEventListener('yms-yard-changed', refresh);
   }, [loadOptions]);
 
   useEffect(() => {
@@ -715,9 +788,10 @@ function ServiceDispatchTab() {
             <Select
               mode="multiple"
               className="mt-2 w-full"
+              disabled={!vehicleId}
               value={selectedServices}
               onChange={setSelectedServices}
-              placeholder="Chọn một hoặc nhiều dịch vụ"
+              placeholder={vehicleId ? "Chọn một hoặc nhiều dịch vụ" : "Chọn xe trong bãi trước"}
               options={services.map((service) => ({
                 value: service.id,
                 label: `${service.name} · ${service.expectedDurationMinutes} phút · ${service.hourlyRate.toLocaleString('vi-VN')}/giờ`,
@@ -779,7 +853,6 @@ function YardManagementTab({
   const [form] = Form.useForm();
   const [editing, setEditing] = useState<Yard>();
   const [modalOpen, setModalOpen] = useState(false);
-  const [mapView, setMapView] = useState(false);
   const [alertDrawerOpen, setAlertDrawerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -851,25 +924,6 @@ function YardManagementTab({
     },
   ];
 
-  const locations = inventory.map((item, index) => {
-    const coordinates = inventory
-      .filter((entry) => Number.isFinite(entry.yard.latitude) && Number.isFinite(entry.yard.longitude));
-    const latitudes = coordinates.map((entry) => entry.yard.latitude ?? 0);
-    const longitudes = coordinates.map((entry) => entry.yard.longitude ?? 0);
-    const minLat = Math.min(...latitudes);
-    const maxLat = Math.max(...latitudes);
-    const minLng = Math.min(...longitudes);
-    const maxLng = Math.max(...longitudes);
-    const hasCoordinates = Number.isFinite(item.yard.latitude) && Number.isFinite(item.yard.longitude);
-    const left = hasCoordinates && maxLng !== minLng
-      ? 10 + ((item.yard.longitude! - minLng) / (maxLng - minLng)) * 75
-      : 12 + (index % 4) * 22;
-    const top = hasCoordinates && maxLat !== minLat
-      ? 12 + ((maxLat - item.yard.latitude!) / (maxLat - minLat)) * 72
-      : 15 + (Math.floor(index / 4) % 3) * 27;
-    return { item, left, top };
-  });
-
   return (
     <Space direction="vertical" size="large" className="w-full">
       <Row gutter={[16, 16]}>
@@ -891,32 +945,9 @@ function YardManagementTab({
       </Row>
       <Card
         title={<Space><EnvironmentOutlined /> Quản lý bãi</Space>}
-        extra={
-          <Space>
-            <Text>Map view</Text>
-            <Switch checked={mapView} onChange={setMapView} />
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>Thêm bãi</Button>
-          </Space>
-        }
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>Thêm bãi</Button>}
       >
-        {mapView ? (
-          <div className="relative min-h-96 overflow-hidden rounded-lg border border-dashed border-slate-300 bg-slate-50"
-            aria-label="Sơ đồ phân bố bãi">
-            {locations.map(({ item, left, top }) => (
-              <div key={item.yard.id} className="absolute -translate-x-1/2 -translate-y-1/2"
-                style={{ left: `${left}%`, top: `${top}%` }}>
-                <Card size="small" className="w-44 shadow-md">
-                  <Text strong>{item.yard.code} — {item.yard.name}</Text>
-                  <Progress percent={item.occupancyPercent} status={item.alert ? 'exception' : 'active'} />
-                  <Text type="secondary">{item.occupancy}/{item.yard.capacity} xe</Text>
-                </Card>
-              </div>
-            ))}
-            {inventory.length === 0 && <Empty className="pt-24" description="Chưa có bãi để hiển thị" />}
-          </div>
-        ) : (
-          <Table rowKey={(row) => row.yard.id} columns={columns} dataSource={inventory} pagination={{ pageSize: 8 }} />
-        )}
+        <Table rowKey={(row) => row.yard.id} columns={columns} dataSource={inventory} pagination={{ pageSize: 8 }} />
       </Card>
       <Drawer title="Cảnh báo bãi" open={alertDrawerOpen} onClose={() => setAlertDrawerOpen(false)}>
         <Space direction="vertical" className="w-full">
@@ -1031,6 +1062,18 @@ export function OperationsPage() {
   }, [token]);
 
   const yards = useMemo(() => inventory.map((item) => item.yard), [inventory]);
+  const can = (permission: string) => !!user?.roles.includes('ADMIN')
+    || user?.permissions.includes('*') === true
+    || user?.permissions.includes(permission) === true;
+  const operationTabs: { key: string; label: string; children: ReactNode }[] = [];
+  if (can('VEHICLE_OPERATE')) operationTabs.push({ key: 'prenotification', label: 'Thông báo xe trước', children: <VehicleRegistrationTab yards={yards} /> });
+  if (can('GATE_OPERATE')) operationTabs.push({ key: 'gate', label: 'Check-in / Check-out', children: <GateTab yards={yards} isAdmin={!!user?.roles.includes('ADMIN')} /> });
+  if (can('SERVICE_DISPATCH')) operationTabs.push({ key: 'dispatch', label: 'Điều phối dịch vụ', children: <ServiceDispatchTab /> });
+  if (can('YARD_READ') || can('YARD_WRITE')) operationTabs.push({
+      key: 'yards',
+      label: 'Quản lý bãi',
+      children: <YardManagementTab inventory={inventory} alerts={alerts} onInventoryRefresh={refreshYards} />,
+    });
 
   return (
     <div className="space-y-4">
@@ -1044,16 +1087,7 @@ export function OperationsPage() {
         </Tag>
       </div>
       <Tabs
-        items={[
-          { key: 'prenotification', label: 'Thông báo xe trước', children: <VehicleRegistrationTab /> },
-          { key: 'gate', label: 'Check-in / Check-out', children: <GateTab yards={yards} isAdmin={!!user?.roles.includes('ADMIN')} /> },
-          { key: 'dispatch', label: 'Điều phối dịch vụ', children: <ServiceDispatchTab /> },
-          {
-            key: 'yards',
-            label: 'Quản lý bãi',
-            children: <YardManagementTab inventory={inventory} alerts={alerts} onInventoryRefresh={refreshYards} />,
-          },
-        ]}
+        items={operationTabs}
       />
     </div>
   );

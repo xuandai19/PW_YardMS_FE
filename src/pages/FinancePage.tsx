@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, DatePicker, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Upload, message } from 'antd';
+import { Alert, Button, DatePicker, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Upload, message } from 'antd';
 import axios from 'axios';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -28,6 +28,7 @@ type Debt = {
   principalAmount: number;
   paidAmount: number;
   interestAccrued: number;
+  interestPaid: number;
   dueDate: string;
   status: string;
 };
@@ -47,10 +48,16 @@ type Invoice = {
 type ServiceOrder = {
   id: string;
   vehicleId: string;
+  plateNumber: string;
   serviceId: string;
+  serviceName: string;
   totalAmount: number;
+  quantity: number;
+  unitPrice: number;
   status: string;
 };
+
+type InvoiceLine = { serviceOrderId: string; plateNumber: string; serviceCode: string; serviceName: string; quantity: number; unitPrice: number; lineAmount: number };
 
 type InterestEntry = {
   id: string;
@@ -75,7 +82,11 @@ export default function FinancePage() {
   const [interestHistoryOpen, setInterestHistoryOpen] = useState(false);
   const [debtPartnerFilter, setDebtPartnerFilter] = useState('');
   const [invoicePartnerFilter, setInvoicePartnerFilter] = useState('');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('ALL');
+  const [invoiceDetail, setInvoiceDetail] = useState<Invoice>();
+  const [invoiceLines, setInvoiceLines] = useState<InvoiceLine[]>([]);
   const [interestHistory, setInterestHistory] = useState<InterestEntry[]>([]);
+  const [selectedDebtId, setSelectedDebtId] = useState<string>();
   const [issueForm] = Form.useForm();
   const [paymentForm] = Form.useForm();
   const [interestForm] = Form.useForm();
@@ -140,11 +151,23 @@ export default function FinancePage() {
     }
   };
 
-  const recordPayment = async (values: { amount: number; referenceNo?: string; note?: string }) => {
+  const outstandingForInvoice = (invoice: Invoice) => {
+    const debt = debts.find(item => item.invoiceId === invoice.id);
+    if (!debt) return Math.max(0, invoice.totalAmount);
+    return Math.max(0, debt.principalAmount - debt.paidAmount
+      + debt.interestAccrued - debt.interestPaid);
+  };
+
+  const recordPayment = async (values: { referenceNo?: string; note?: string }) => {
     if (!paymentInvoice) return;
+    const amountDue = outstandingForInvoice(paymentInvoice);
+    if (amountDue <= 0) {
+      message.info('Hóa đơn này đã được thanh toán đủ.');
+      return;
+    }
     try {
       const data = new FormData();
-      data.append('amount', String(values.amount));
+      data.append('amount', amountDue.toFixed(4));
       data.append('paidAt', new Date().toISOString());
       if (values.referenceNo) data.append('referenceNo', values.referenceNo);
       if (values.note) data.append('note', values.note);
@@ -176,6 +199,16 @@ export default function FinancePage() {
     }
   };
 
+  const showInvoiceDetail = async (invoice: Invoice) => {
+    try {
+      const response = await api.get(`/finance/invoices/${invoice.id}/items`);
+      setInvoiceLines(response.data.data);
+      setInvoiceDetail(invoice);
+    } catch (error) {
+      message.error(apiError(error, 'Không thể tải các khoản trong hóa đơn'));
+    }
+  };
+
   const submitEInvoice = async (id: string) => {
     try {
       await api.post(`/finance/invoices/${id}/e-invoice`);
@@ -202,9 +235,24 @@ export default function FinancePage() {
     try {
       const response = await api.get(`/finance/debts/${debtId}/interest`);
       setInterestHistory(response.data.data);
+      setSelectedDebtId(debtId);
       setInterestHistoryOpen(true);
     } catch (error) {
       message.error(apiError(error, 'Không thể tải lịch sử tính lãi'));
+    }
+  };
+
+  const accrueInterestNow = async () => {
+    try {
+      const response = await api.post('/finance/interest/accrue');
+      message.success(`Đã ghi nhận lãi cho ${response.data.data} khoản nợ.`);
+      await load();
+      if (selectedDebtId) {
+        const history = await api.get(`/finance/debts/${selectedDebtId}/interest`);
+        setInterestHistory(history.data.data);
+      }
+    } catch (error) {
+      message.error(apiError(error, 'Không thể tính lãi công nợ'));
     }
   };
 
@@ -218,7 +266,10 @@ export default function FinancePage() {
     && contract.endDate >= new Date().toISOString().slice(0, 10)
     && (contract.partnerAId === partnerId || contract.partnerCId === partnerId));
   const filteredDebts = debts.filter(debt => partnerName(debt.partnerId).toLowerCase().includes(debtPartnerFilter.toLowerCase()));
-  const filteredInvoices = invoices.filter(invoice => partnerName(invoice.partnerId).toLowerCase().includes(invoicePartnerFilter.toLowerCase()));
+  const filteredInvoices = invoices.filter(invoice =>
+    partnerName(invoice.partnerId).toLowerCase().includes(invoicePartnerFilter.toLowerCase())
+    && (invoiceStatusFilter === 'ALL' || (invoiceStatusFilter === 'PAID'
+      ? invoice.status === 'PAID' : ['UNPAID', 'OVERDUE'].includes(invoice.status))));
   const debtColumns = [
     { title: 'Đối tác', dataIndex: 'partnerId', key: 'partnerId', render: (id: string) => partnerName(id) },
     { title: 'Hóa đơn', dataIndex: 'invoiceId', key: 'invoiceId' },
@@ -246,6 +297,7 @@ export default function FinancePage() {
       key: 'actions',
       render: (_: unknown, invoice: Invoice) => (
         <Space>
+          <Button onClick={() => void showInvoiceDetail(invoice)}>Xem khoản mục</Button>
           <Button onClick={() => void downloadInvoice(invoice.id)}>PDF</Button>
           {canManageFinance && <Button onClick={() => void submitEInvoice(invoice.id)}>Hóa đơn điện tử</Button>}
           {invoice.status !== 'CANCELLED' && (
@@ -272,6 +324,10 @@ export default function FinancePage() {
           <Table rowKey="id" dataSource={filteredDebts} columns={debtColumns} />
         </> },
         { key: 'invoices', label: 'Hóa đơn', children: <>
+          <Select className="mb-3 mr-3 w-52" value={invoiceStatusFilter} onChange={setInvoiceStatusFilter} options={[
+            { value: 'ALL', label: 'Tất cả trạng thái' }, { value: 'PAID', label: 'Đã thanh toán' },
+            { value: 'UNPAID', label: 'Chưa thanh toán' },
+          ]} />
           <Input.Search className="mb-3 max-w-md" allowClear placeholder="Lọc theo mã hoặc tên đối tác"
             onChange={event => setInvoicePartnerFilter(event.target.value)} />
           <Table rowKey="id" dataSource={filteredInvoices} columns={invoiceColumns} />
@@ -293,7 +349,7 @@ export default function FinancePage() {
           <Form.Item name="serviceOrderIds" label="Đơn dịch vụ đã hoàn thành, chưa xuất hóa đơn" rules={[{ required: true, message: 'Chọn ít nhất một đơn dịch vụ' }]}>
             <Select mode="multiple" options={issueableOrders.map(order => ({
               value: order.id,
-              label: `${order.id} · xe ${order.vehicleId} · ${order.totalAmount.toLocaleString('vi-VN')}`,
+              label: `${order.plateNumber} · ${order.serviceName} · ${order.totalAmount.toLocaleString('vi-VN')} đ`,
             }))} />
           </Form.Item>
           <Form.Item name="dueDate" label="Hạn thanh toán" rules={[{ required: true, message: 'Chọn hạn thanh toán' }]}>
@@ -305,6 +361,20 @@ export default function FinancePage() {
           <Button type="primary" htmlType="submit">Phát hành</Button>
         </Form>
       </Modal>
+      <Modal open={!!invoiceDetail} title={invoiceDetail ? `Chi tiết hóa đơn ${invoiceDetail.invoiceNo}` : 'Chi tiết hóa đơn'}
+        footer={null} width={850} onCancel={() => setInvoiceDetail(undefined)}>
+        {invoiceDetail && <>
+          <Alert className="mb-4" type="info" showIcon message={`${partnerName(invoiceDetail.partnerId)} · phát hành ${invoiceDetail.issueDate} · hạn ${invoiceDetail.dueDate}`} />
+          <Table rowKey="serviceOrderId" pagination={false} dataSource={invoiceLines} columns={[
+            { title: 'Biển số xe', dataIndex: 'plateNumber' },
+            { title: 'Dịch vụ', dataIndex: 'serviceName', render: (name: string, row: InvoiceLine) => `${name} (${row.serviceCode})` },
+            { title: 'Số lượng', dataIndex: 'quantity' },
+            { title: 'Đơn giá', dataIndex: 'unitPrice', render: (value: number) => `${value.toLocaleString('vi-VN')} đ` },
+            { title: 'Thành tiền', dataIndex: 'lineAmount', render: (value: number) => `${value.toLocaleString('vi-VN')} đ` },
+          ]} />
+          <div className="mt-4 text-right font-semibold">Tổng hóa đơn: {invoiceDetail.totalAmount.toLocaleString('vi-VN')} đ</div>
+        </>}
+      </Modal>
       <Modal open={interestOpen} title="Cấu hình lãi quá hạn" footer={null} onCancel={() => setInterestOpen(false)}>
         <Form form={interestForm} layout="vertical" initialValues={{ graceDays: 0, active: true }} onFinish={configureInterest}>
           <Form.Item name="partnerId" label="Partner" rules={[{ required: true, message: "Select a partner" }]}><Select showSearch optionFilterProp="label" options={partners.map((partner) => ({ value: partner.id, label: `${partner.code} - ${partner.name}` }))} placeholder="Select partner" /></Form.Item>
@@ -315,18 +385,18 @@ export default function FinancePage() {
         </Form>
       </Modal>
       <Modal open={interestHistoryOpen} title="Lịch sử ghi nhận lãi" footer={null} onCancel={() => setInterestHistoryOpen(false)}>
-        <Table rowKey="id" dataSource={interestHistory} pagination={false} columns={[
+        <Alert className="mb-3" type="info" showIcon message="Lãi chỉ phát sinh sau hạn thanh toán và thời gian ân hạn, khi đối tác đã có cấu hình lãi suất đang áp dụng." />
+        {user?.roles.includes('ADMIN') && <Button className="mb-3" onClick={() => void accrueInterestNow()}>Tính lãi đến hôm nay</Button>}
+        {interestHistory.length === 0 ? <Empty description="Chưa có khoản lãi nào được ghi nhận" /> : <Table rowKey="id" dataSource={interestHistory} pagination={false} columns={[
           { title: 'Ngày', dataIndex: 'accrualDate' },
           { title: 'Dư gốc', dataIndex: 'outstandingPrincipal', render: (value: number) => value.toLocaleString('vi-VN') },
           { title: 'Lãi %/ngày', dataIndex: 'ratePerDayPercent' },
           { title: 'Tiền lãi', dataIndex: 'amount', render: (value: number) => value.toLocaleString('vi-VN') },
-        ]} />
+        ]} />}
       </Modal>
       <Modal open={!!paymentInvoice} title="Ghi nhận chuyển khoản" footer={null} onCancel={() => setPaymentInvoice(undefined)}>
         <Form form={paymentForm} layout="vertical" onFinish={recordPayment}>
-          <Form.Item name="amount" label="Số tiền" rules={[{ required: true }]}>
-            <InputNumber min={0.0001} className="w-full" />
-          </Form.Item>
+          {paymentInvoice && <Alert className="mb-4" type="info" showIcon message={`Thanh toán toàn bộ dư nợ: ${outstandingForInvoice(paymentInvoice).toLocaleString('vi-VN')} (gốc và lãi đã phát sinh).`} />}
           <Form.Item name="referenceNo" label="Mã giao dịch"><Input /></Form.Item>
           <Form.Item name="note" label="Ghi chú"><Input.TextArea /></Form.Item>
           <Form.Item label="Chứng từ (PDF/JPEG/PNG, tối đa 10 MB)">

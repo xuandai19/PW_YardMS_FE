@@ -18,6 +18,8 @@ export interface TripSummary {
   originLatitude?: number;
   originLongitude?: number;
   destination: string;
+  destinationLatitude?: number;
+  destinationLongitude?: number;
   status: string;
 }
 
@@ -61,6 +63,11 @@ export interface YardHistoryEntry {
   preNotificationId: string;
   plateNumber: string;
   driverName: string;
+  vehicleType?: string;
+  carrierCompany?: string;
+  partnerAId: string;
+  partnerACode: string;
+  partnerAName: string;
   yardId: string;
   yardCode: string;
   yardName: string;
